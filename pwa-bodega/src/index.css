@@ -1,0 +1,96 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --verde: #1D9E75;
+  --verde-dark: #085041;
+  --verde-bg: #E1F5EE;
+  --rojo: #D85A30;
+  --rojo-dark: #712B13;
+  --rojo-bg: #FAECE7;
+  --gris: #5F5E5A;
+  --gris-bg: #F1EFE8;
+  --fondo: #f5f5f3;
+  --blanco: #ffffff;
+  --borde: rgba(0,0,0,0.1);
+  --texto: #1a1a18;
+  --texto-suave: #5F5E5A;
+  --radio: 14px;
+  --radio-sm: 10px;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  background: var(--fondo);
+  color: var(--texto);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+input {
+  font-family: inherit;
+  outline: none;
+}
+
+/* Botones grandes para dedos */
+.btn-primary {
+  width: 100%;
+  padding: 18px;
+  background: var(--verde);
+  color: white;
+  font-size: 17px;
+  font-weight: 600;
+  border-radius: var(--radio);
+  letter-spacing: 0.2px;
+  transition: opacity 0.1s;
+  min-height: 56px;
+}
+.btn-primary:active { opacity: 0.85; }
+.btn-primary.rojo { background: var(--rojo); }
+
+.btn-secondary {
+  width: 100%;
+  padding: 15px;
+  background: transparent;
+  color: var(--texto-suave);
+  font-size: 15px;
+  border: 1.5px solid var(--borde);
+  border-radius: var(--radio);
+  min-height: 50px;
+  transition: background 0.1s;
+}
+.btn-secondary:active { background: var(--gris-bg); }
+
+/* Cards */
+.card {
+  background: var(--blanco);
+  border-radius: var(--radio);
+  border: 1px solid var(--borde);
+  padding: 16px;
+}
+
+/* Badges de stock */
+.badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 99px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.badge-ok   { background: var(--verde-bg); color: var(--verde-dark); }
+.badge-low  { background: #FAEEDA; color: #633806; }
+.badge-zero { background: var(--rojo-bg); color: var(--rojo-dark); }
