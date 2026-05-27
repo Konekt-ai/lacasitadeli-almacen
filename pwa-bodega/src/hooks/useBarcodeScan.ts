@@ -1,36 +1,43 @@
 import { useEffect, useRef } from 'react'
 
-// El lector Zebra tipea los caracteres del código y termina con Enter.
-// Este hook acumula lo que llega en menos de 50ms (velocidad del scanner)
-// y lo distingue de un humano escribiendo manualmente.
+// El lector Zebra TC52 tipea los caracteres en ráfaga (<50ms entre teclas).
+// Dispara onScan cuando llega Enter O cuando pasan 120ms sin más caracteres
+// y el buffer tiene >= 4 chars (scanner sin sufijo Enter configurado).
 export function useBarcodeScan(onScan: (codigo: string) => void) {
   const bufferRef = useRef('')
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const timerRef  = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
+    function flush() {
+      const codigo = bufferRef.current.trim()
+      bufferRef.current = ''
+      if (codigo.length >= 4) onScan(codigo)
+    }
+
     function handleKeyDown(e: KeyboardEvent) {
-      // Ignorar si el foco está en un input de cantidad
       const target = e.target as HTMLElement
+
+      // Si el foco está en un input manual, no interferir
       if (target.dataset.manual === 'true') return
 
       if (e.key === 'Enter') {
-        const codigo = bufferRef.current.trim()
-        if (codigo.length >= 6) onScan(codigo)
-        bufferRef.current = ''
+        if (timerRef.current) clearTimeout(timerRef.current)
+        flush()
         return
       }
 
       if (e.key.length === 1) {
         bufferRef.current += e.key
         if (timerRef.current) clearTimeout(timerRef.current)
-        // Si pasa más de 100ms entre teclas, asumimos que es escritura humana
-        timerRef.current = setTimeout(() => {
-          bufferRef.current = ''
-        }, 100)
+        // Dispara automáticamente si no llega más input en 120ms
+        timerRef.current = setTimeout(flush, 120)
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      if (timerRef.current) clearTimeout(timerRef.current)
+    }
   }, [onScan])
 }

@@ -81,10 +81,10 @@ export default function Historial() {
                 fontSize: 14, fontWeight: 600, color: '#1a1a18',
                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
               }}>
-                {m.nombre}
+                {m.nombre ?? m.codigo}
               </p>
               <p style={{ fontSize: 12, color: '#aaa' }}>
-                {formatHora(m.fecha)} · {m.tipo}
+                {formatHora(m.fecha)} · {m.tipo} · <span style={{ fontFamily: 'monospace' }}>{m.codigo}</span>
               </p>
             </div>
             <p style={{

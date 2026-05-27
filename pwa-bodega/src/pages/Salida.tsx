@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import { api, type Producto } from '../api/inventario'
 import { useBarcodeScan } from '../hooks/useBarcodeScan'
 
@@ -12,6 +12,14 @@ export default function Salida() {
   const [error, setError] = useState('')
   const [cargando, setCargando] = useState(false)
   const [inputManual, setInputManual] = useState('')
+  const scanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  function handleScanInput(val: string) {
+    setInputManual(val)
+    if (scanTimerRef.current) clearTimeout(scanTimerRef.current)
+    if (val.trim().length >= 4)
+      scanTimerRef.current = setTimeout(() => buscarProducto(val.trim()), 150)
+  }
 
   const buscarProducto = useCallback(async (codigo: string) => {
     if (cargando) return
@@ -40,7 +48,7 @@ export default function Salida() {
     }
     setCargando(true)
     try {
-      const res = await api.registrarSalida(producto.codigo, cantidad)
+      const res = await api.registrarSalida(producto.codigo, cantidad, producto.nombre)
       setNuevoStock(res.stockActual)
       setPaso('exito')
     } catch (e) {
@@ -83,10 +91,10 @@ export default function Salida() {
         <label style={{ fontSize: 13, color: '#5F5E5A' }}>O escribe el código manualmente</label>
         <div style={{ display: 'flex', gap: 8 }}>
           <input
-            data-manual="true"
+            autoFocus
             value={inputManual}
-            onChange={e => setInputManual(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && inputManual.trim() && buscarProducto(inputManual)}
+            onChange={e => handleScanInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && inputManual.trim() && buscarProducto(inputManual.trim())}
             placeholder="Código de barras..."
             style={{
               flex: 1, padding: '14px 14px', fontSize: 16,
@@ -134,12 +142,13 @@ export default function Salida() {
         <>
           <div>
             <p style={{ fontSize: 14, color: '#5F5E5A', marginBottom: 10 }}>¿Cuántas piezas salen?</p>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'stretch' }}>
               <button
                 onClick={() => setCantidad(c => Math.max(1, c - 1))}
                 style={{
-                  width: 56, height: 56, fontSize: 24, fontWeight: 300,
-                  border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 12, background: 'white'
+                  width: 72, minHeight: 72, fontSize: 32, fontWeight: 300,
+                  border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 16, background: 'white',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0
                 }}
               >−</button>
               <input
@@ -150,16 +159,18 @@ export default function Salida() {
                 max={producto.stock}
                 onChange={e => setCantidad(Math.min(producto.stock, Math.max(1, parseInt(e.target.value) || 1)))}
                 style={{
-                  flex: 1, textAlign: 'center', fontSize: 32, fontWeight: 700,
-                  border: `1.5px solid rgba(216,90,48,0.4)`, borderRadius: 12,
-                  padding: '10px 0', background: 'white', color: '#1a1a18'
+                  flex: 1, textAlign: 'center', fontSize: 36, fontWeight: 700,
+                  border: `1.5px solid rgba(216,90,48,0.4)`, borderRadius: 16,
+                  padding: '12px 0', background: 'white', color: '#1a1a18',
+                  minWidth: 0
                 }}
               />
               <button
                 onClick={() => setCantidad(c => Math.min(producto.stock, c + 1))}
                 style={{
-                  width: 56, height: 56, fontSize: 24, fontWeight: 300,
-                  border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 12, background: 'white'
+                  width: 72, minHeight: 72, fontSize: 32, fontWeight: 300,
+                  border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 16, background: 'white',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0
                 }}
               >+</button>
             </div>

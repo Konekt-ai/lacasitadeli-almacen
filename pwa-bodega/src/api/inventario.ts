@@ -1,5 +1,3 @@
-const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://192.168.1.100:3002'
-
 export interface Producto {
   codigo: string
   nombre: string
@@ -15,9 +13,12 @@ export interface MovimientoResponse {
 export interface Movimiento {
   id: number
   codigo: string
-  nombre: string
+  nombre: string | null
   tipo: 'entrada' | 'salida'
   cantidad: number
+  stock_antes: number
+  stock_despues: number
+  usuario: string
   fecha: string
 }
 
@@ -25,7 +26,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 8000)
   try {
-    const res = await fetch(`${BASE_URL}${path}`, {
+    const res = await fetch(path, {
       ...options,
       signal: controller.signal,
       headers: { 'Content-Type': 'application/json', ...options?.headers },
@@ -45,20 +46,20 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   getProducto: (codigo: string) =>
-    request<Producto>(`/producto/${codigo}`),
+    request<Producto>(`/api/almacen/producto/${encodeURIComponent(codigo)}`),
 
-  registrarEntrada: (codigo: string, cantidad: number) =>
-    request<MovimientoResponse>('/inventario/entrada', {
+  registrarEntrada: (codigo: string, cantidad: number, nombre?: string) =>
+    request<MovimientoResponse>('/api/almacen/entrada', {
       method: 'POST',
-      body: JSON.stringify({ codigo, cantidad }),
+      body: JSON.stringify({ codigo, cantidad, nombre }),
     }),
 
-  registrarSalida: (codigo: string, cantidad: number) =>
-    request<MovimientoResponse>('/inventario/salida', {
+  registrarSalida: (codigo: string, cantidad: number, nombre?: string) =>
+    request<MovimientoResponse>('/api/almacen/salida', {
       method: 'POST',
-      body: JSON.stringify({ codigo, cantidad }),
+      body: JSON.stringify({ codigo, cantidad, nombre }),
     }),
 
   getMovimientos: () =>
-    request<Movimiento[]>('/inventario/movimientos'),
+    request<Movimiento[]>('/api/almacen/movimientos'),
 }

@@ -25,7 +25,7 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
         runtimeCaching: [
           {
-            urlPattern: /\/producto\/.*/,
+            urlPattern: /\/api\/almacen\/producto\/.*/,
             handler: 'NetworkFirst',
             options: {
               cacheName: 'productos-cache',

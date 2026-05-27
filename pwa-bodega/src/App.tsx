@@ -2,13 +2,15 @@ import { useState } from 'react'
 import Recepcion from './pages/Recepcion'
 import Salida from './pages/Salida'
 import Historial from './pages/Historial'
+import Buscar from './pages/Buscar'
 
-type Tab = 'recepcion' | 'salida' | 'historial'
+type Tab = 'recepcion' | 'salida' | 'historial' | 'buscar'
 
 const TABS: { id: Tab; label: string; emoji: string }[] = [
   { id: 'recepcion', label: 'Recepción', emoji: '📦' },
   { id: 'salida',    label: 'Salida',    emoji: '📤' },
   { id: 'historial', label: 'Historial', emoji: '📋' },
+  { id: 'buscar',    label: 'Buscar',    emoji: '🔍' },
 ]
 
 export default function App() {
@@ -16,8 +18,9 @@ export default function App() {
 
   const headerColor = tab === 'salida' ? '#D85A30' : '#1D9E75'
   const headerLabel = tab === 'recepcion' ? 'Recepción de mercancía'
-    : tab === 'salida' ? 'Salida de producto'
-    : 'Historial del día'
+    : tab === 'salida'    ? 'Salida de producto'
+    : tab === 'historial' ? 'Historial del día'
+    : 'Buscar producto'
 
   return (
     <div style={{
@@ -45,10 +48,11 @@ export default function App() {
       </div>
 
       {/* Contenido */}
-      <div style={{ flex: 1, overflowY: 'auto', overscrollBehavior: 'contain' }}>
+      <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain' }}>
         {tab === 'recepcion' && <Recepcion />}
         {tab === 'salida'    && <Salida />}
         {tab === 'historial' && <Historial />}
+        {tab === 'buscar'    && <Buscar />}
       </div>
 
       {/* Nav inferior — estilo TC52: botones grandes */}
@@ -72,8 +76,8 @@ export default function App() {
               background: 'none', cursor: 'pointer'
             }}
           >
-            <span style={{ fontSize: 22 }}>{t.emoji}</span>
-            <span style={{ fontSize: 11, fontWeight: tab === t.id ? 600 : 400 }}>{t.label}</span>
+            <span style={{ fontSize: 20 }}>{t.emoji}</span>
+            <span style={{ fontSize: 10, fontWeight: tab === t.id ? 600 : 400 }}>{t.label}</span>
           </button>
         ))}
       </div>
