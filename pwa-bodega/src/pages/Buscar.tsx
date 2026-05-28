@@ -1,11 +1,6 @@
 import { useState } from 'react'
 import { useBarcodeScan } from '../hooks/useBarcodeScan'
-
-interface Resultado {
-  codigo: string
-  nombre: string
-  stock: number
-}
+import { api, type Producto } from '../api/inventario'
 
 function stockColor(stock: number) {
   if (stock === 0) return '#D85A30'
@@ -15,7 +10,7 @@ function stockColor(stock: number) {
 
 export default function Buscar() {
   const [query,      setQuery]      = useState('')
-  const [resultados, setResultados] = useState<Resultado[]>([])
+  const [resultados, setResultados] = useState<Producto[]>([])
   const [cargando,   setCargando]   = useState(false)
   const [error,      setError]      = useState('')
   const [buscado,    setBuscado]    = useState(false)
@@ -27,9 +22,8 @@ export default function Buscar() {
     setError('')
     setBuscado(true)
     try {
-      const res = await fetch(`/buscar?q=${encodeURIComponent(termino)}`)
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.mensaje ?? `Error ${res.status}`)
+      // Usamos nuestra API conectada a la IP correcta
+      const data = await api.buscarProductos(termino)
       setResultados(data)
     } catch (e) {
       setError((e as Error).message)

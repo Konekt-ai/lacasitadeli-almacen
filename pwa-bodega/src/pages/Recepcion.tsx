@@ -13,6 +13,7 @@ export default function Recepcion() {
   const [cargando, setCargando] = useState(false)
   const [inputManual, setInputManual] = useState('')
   const scanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const registrandoRef = useRef(false)
 
   function handleScanInput(val: string) {
     setInputManual(val)
@@ -40,7 +41,8 @@ export default function Recepcion() {
   useBarcodeScan(buscarProducto)
 
   async function confirmar() {
-    if (!producto || cargando) return
+    if (!producto || registrandoRef.current) return
+    registrandoRef.current = true
     setCargando(true)
     try {
       const res = await api.registrarEntrada(producto.codigo, cantidad, producto.nombre)
@@ -50,6 +52,7 @@ export default function Recepcion() {
       setError((e as Error).message)
       setPaso('error')
     } finally {
+      registrandoRef.current = false
       setCargando(false)
     }
   }

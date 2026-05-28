@@ -15,7 +15,7 @@ function getLocalIP() {
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const PORT = process.env.PORT ?? 3003
+const PORT = process.env.PORT ?? 3002
 
 const app = express()
 app.use(express.json())
@@ -30,16 +30,9 @@ const sqlConfig = {
   pool:     { max: 10, min: 0, idleTimeoutMillis: 30000 },
 }
 
-const VISTA    = '[compucaja].[dbo].[VArticulosUnificados]'
-const COMPUEJE = '[compucaja].[dbo].[Compueje]'
-
-// Ajusta estos valores según tu configuración de Nova Caja
-const ALM_BODEGA  = parseInt(process.env.ALM_CODIGO  ?? '1')
-const TMA_ENTRADA = parseInt(process.env.TMA_ENTRADA ?? '7')
-const TMA_SALIDA  = parseInt(process.env.TMA_SALIDA  ?? '7')
-const FOL_TDA     = parseInt(process.env.FOL_TDA     ?? '1')
-const FOL_EST     = parseInt(process.env.FOL_EST     ?? '7')   // Est_Codigo real en Folios
-const FOL_DOC     = parseInt(process.env.FOL_DOC     ?? '1')   // Doc_Codigo real en Folios
+const VISTA = '[compucaja].[dbo].[VArticulosUnificados]'
+const INV   = '[compucaja].[dbo].[inventario_bodega]'
+const MOV   = '[compucaja].[dbo].[movimientos_bodega]'
 
 let pool = null
 async function getPool() {
@@ -47,92 +40,33 @@ async function getPool() {
   return pool
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
+// Lock en memoria — Node.js es single-thread, por lo que esto es atómico
+const _opsEnCurso = new Map()
+function adquirirLock(codigo, tipo) {
+  const key = `${codigo}:${tipo}`
+  if (_opsEnCurso.has(key)) return false
+  _opsEnCurso.set(key, true)
+  setTimeout(() => _opsEnCurso.delete(key), 5000)
+  return true
+}
 
-// Devuelve { Art_Codigo, nombre } buscando por código de barras
-async function getArticulo(db, codigo) {
+async function getNombre(db, codigo) {
   const r = await db.request()
     .input('codigo', sql.NVarChar(50), codigo)
     .query(`
-      SELECT TOP 1 Art_Codigo, Art_Descripcion AS nombre
+      SELECT TOP 1 Art_Descripcion AS nombre
       FROM ${VISTA}
       WHERE Art_GTIN = @codigo OR CodAlt_Codigo = @codigo
+      ORDER BY Art_Codigo
     `)
-  return r.recordset[0] ?? null
+  return r.recordset[0]?.nombre ?? null
 }
 
-// Stock actual = CE_ExistenciaU del movimiento más reciente del artículo
-async function getStock(db, artCodigo) {
+async function getStock(db, codigo) {
   const r = await db.request()
-    .input('artCodigo', sql.NVarChar(50), String(artCodigo))
-    .input('alm', sql.BigInt, ALM_BODEGA)
-    .query(`
-      SELECT TOP 1 CE_ExistenciaU AS stock
-      FROM ${COMPUEJE}
-      WHERE Art_Codigo = @artCodigo AND Alm_Codigo = @alm
-      ORDER BY CE_Fecha DESC, FolConsecutivo DESC, CE_ColConsecutivo DESC
-    `)
-  return Math.max(0, Math.floor(r.recordset[0]?.stock ?? 0))
-}
-
-// Inserta una fila en Folios + Compueje dentro de una transacción.
-// cantidad positiva = entrada, negativa = salida.
-async function insertarMovimiento(db, artCodigo, cantidad, nuevoStock, tma) {
-  const t = db.transaction()
-  await t.begin()
-  try {
-    // Siguiente consecutivo en Folios para este namespace (con bloqueo para evitar duplicados)
-    const fr = await t.request()
-      .input('foltda', sql.BigInt, FOL_TDA)
-      .input('folest', sql.BigInt, FOL_EST)
-      .input('foldoc', sql.BigInt, FOL_DOC)
-      .query(`
-        SELECT ISNULL(MAX(Consecutivo), 0) + 1 AS nextFolio
-        FROM [compucaja].[dbo].[Folios] WITH (UPDLOCK, HOLDLOCK)
-        WHERE Tda_Codigo = @foltda AND Est_Codigo = @folest AND Doc_Codigo = @foldoc
-      `)
-    const folio = fr.recordset[0].nextFolio
-
-    // 1) Insertar folio (requerido por FK_Compueje_Folios)
-    await t.request()
-      .input('foltda', sql.BigInt, FOL_TDA)
-      .input('folest', sql.BigInt, FOL_EST)
-      .input('foldoc', sql.BigInt, FOL_DOC)
-      .input('folio',  sql.BigInt, folio)
-      .query(`
-        INSERT INTO [compucaja].[dbo].[Folios] (Tda_Codigo, Est_Codigo, Doc_Codigo, Consecutivo)
-        VALUES (@foltda, @folest, @foldoc, @folio)
-      `)
-
-    // 2) Insertar movimiento en Compueje
-    await t.request()
-      .input('artCodigo',  sql.NVarChar(50),   String(artCodigo))
-      .input('cantidad',   sql.Decimal(18, 4), cantidad)
-      .input('existencia', sql.Decimal(18, 4), nuevoStock)
-      .input('folio',      sql.BigInt,          folio)
-      .input('tma',        sql.BigInt,          tma)
-      .input('alm',        sql.BigInt,          ALM_BODEGA)
-      .input('foltda',     sql.BigInt,          FOL_TDA)
-      .input('folest',     sql.BigInt,          FOL_EST)
-      .input('foldoc',     sql.BigInt,          FOL_DOC)
-      .query(`
-        INSERT INTO ${COMPUEJE}
-          (FolTda_Codigo, FolEst_Codigo, FolDoc_Codigo, FolConsecutivo, CE_ColConsecutivo,
-           Art_Codigo, Alm_Codigo, TMA_Codigo, CE_Cantidad, CE_ExistenciaU,
-           CE_Importe, CE_CostoUnitario, CE_Fecha, CE_Compensado, AlmTda_Codigo,
-           CE_PorConsolidar, CE_Referencia1, CE_Referencia2, CE_Observaciones)
-        VALUES
-          (@foltda, @folest, @foldoc, @folio, 1,
-           @artCodigo, @alm, @tma, @cantidad, @existencia,
-           0, 0, GETDATE(), 0, @alm,
-           0, '', '', 'Bodega')
-      `)
-
-    await t.commit()
-  } catch (err) {
-    await t.rollback()
-    throw err
-  }
+    .input('codigo', sql.VarChar(50), codigo)
+    .query(`SELECT ISNULL(cantidad, 0) AS stock FROM ${INV} WHERE codigo_barras = @codigo`)
+  return r.recordset[0]?.stock ?? 0
 }
 
 // ── GET /api/almacen/producto/:codigo ─────────────────────────────────────────
@@ -140,10 +74,10 @@ app.get('/api/almacen/producto/:codigo', async (req, res) => {
   const { codigo } = req.params
   try {
     const db = await getPool()
-    const art = await getArticulo(db, codigo)
-    if (!art) return res.status(404).json({ mensaje: 'Producto no encontrado' })
-    const stock = await getStock(db, art.Art_Codigo)
-    res.json({ codigo, nombre: art.nombre, stock })
+    const nombre = await getNombre(db, codigo)
+    if (!nombre) return res.status(404).json({ mensaje: 'Producto no encontrado' })
+    const stock = await getStock(db, codigo)
+    res.json({ codigo, nombre, stock })
   } catch (err) {
     console.error('getProducto:', err)
     res.status(500).json({ mensaje: err.message })
@@ -157,14 +91,40 @@ app.post('/api/almacen/entrada', async (req, res) => {
     return res.status(400).json({ mensaje: 'Datos inválidos' })
   try {
     const db = await getPool()
-    const art = await getArticulo(db, codigo)
-    if (!art) return res.status(404).json({ mensaje: 'Producto no encontrado' })
+    const nombre = await getNombre(db, codigo)
+    if (!nombre) return res.status(404).json({ mensaje: 'Producto no encontrado' })
 
-    const stockActual = await getStock(db, art.Art_Codigo)
-    const nuevoStock  = stockActual + cantidad
+    if (!adquirirLock(codigo, 'entrada'))
+      return res.json({ ok: true, stockActual: await getStock(db, codigo), mensaje: 'Entrada registrada' })
 
-    await insertarMovimiento(db, art.Art_Codigo, cantidad, nuevoStock, TMA_ENTRADA)
-    res.json({ ok: true, stockActual: nuevoStock, mensaje: 'Entrada registrada' })
+    const stockAntes   = await getStock(db, codigo)
+    const stockDespues = stockAntes + cantidad
+
+    const t = db.transaction()
+    await t.begin()
+    try {
+      await t.request()
+        .input('codigo',   sql.VarChar(50), codigo)
+        .input('cantidad', sql.Int,         cantidad)
+        .query(`
+          MERGE ${INV} AS target
+          USING (SELECT @codigo AS codigo_barras) AS source
+            ON target.codigo_barras = source.codigo_barras
+          WHEN MATCHED THEN
+            UPDATE SET cantidad = target.cantidad + @cantidad, ultima_entrada = GETDATE()
+          WHEN NOT MATCHED THEN
+            INSERT (codigo_barras, cantidad, ultima_entrada) VALUES (@codigo, @cantidad, GETDATE());
+        `)
+
+      await t.request()
+        .input('codigo',   sql.VarChar(50), codigo)
+        .input('cantidad', sql.Int,         cantidad)
+        .query(`INSERT INTO ${MOV} (codigo_barras, tipo, cantidad, fecha) VALUES (@codigo, 'entrada', @cantidad, GETDATE())`)
+
+      await t.commit()
+    } catch (err) { await t.rollback(); throw err }
+
+    res.json({ ok: true, stockActual: stockDespues, mensaje: 'Entrada registrada' })
   } catch (err) {
     console.error('entrada:', err)
     res.status(500).json({ mensaje: err.message })
@@ -178,19 +138,79 @@ app.post('/api/almacen/salida', async (req, res) => {
     return res.status(400).json({ mensaje: 'Datos inválidos' })
   try {
     const db = await getPool()
-    const art = await getArticulo(db, codigo)
-    if (!art) return res.status(404).json({ mensaje: 'Producto no encontrado' })
+    const nombre = await getNombre(db, codigo)
+    if (!nombre) return res.status(404).json({ mensaje: 'Producto no encontrado' })
 
-    const stockActual = await getStock(db, art.Art_Codigo)
-    if (stockActual < cantidad)
-      return res.status(400).json({ mensaje: `Stock insuficiente. Disponible: ${stockActual} pzas` })
+    if (!adquirirLock(codigo, 'salida'))
+      return res.json({ ok: true, stockActual: await getStock(db, codigo), mensaje: 'Salida registrada' })
 
-    const nuevoStock = stockActual - cantidad
-    // CE_Cantidad negativa identifica salidas en Compueje
-    await insertarMovimiento(db, art.Art_Codigo, -cantidad, nuevoStock, TMA_SALIDA)
-    res.json({ ok: true, stockActual: nuevoStock, mensaje: 'Salida registrada' })
+    const stockAntes = await getStock(db, codigo)
+    if (stockAntes < cantidad)
+      return res.status(400).json({ mensaje: `Stock insuficiente. Disponible: ${stockAntes} pzas` })
+
+    const stockDespues = stockAntes - cantidad
+
+    const t = db.transaction()
+    await t.begin()
+    try {
+      await t.request()
+        .input('codigo',   sql.VarChar(50), codigo)
+        .input('cantidad', sql.Int,         cantidad)
+        .query(`UPDATE ${INV} SET cantidad = cantidad - @cantidad, ultima_salida = GETDATE() WHERE codigo_barras = @codigo`)
+
+      await t.request()
+        .input('codigo',   sql.VarChar(50), codigo)
+        .input('cantidad', sql.Int,         cantidad)
+        .query(`INSERT INTO ${MOV} (codigo_barras, tipo, cantidad, fecha) VALUES (@codigo, 'salida', @cantidad, GETDATE())`)
+
+      await t.commit()
+    } catch (err) { await t.rollback(); throw err }
+
+    res.json({ ok: true, stockActual: stockDespues, mensaje: 'Salida registrada' })
   } catch (err) {
     console.error('salida:', err)
+    res.status(500).json({ mensaje: err.message })
+  }
+})
+
+// ── POST /api/almacen/merma ────────────────────────────────────────────────────
+app.post('/api/almacen/merma', async (req, res) => {
+  const { codigo, cantidad, motivo, area, notas } = req.body
+  if (!codigo || !cantidad || cantidad <= 0)
+    return res.status(400).json({ mensaje: 'Datos inválidos' })
+  try {
+    const db = await getPool()
+    const nombre = await getNombre(db, codigo)
+    if (!nombre) return res.status(404).json({ mensaje: 'Producto no encontrado' })
+
+    if (!adquirirLock(codigo, 'merma'))
+      return res.json({ ok: true, stockActual: await getStock(db, codigo), mensaje: 'Merma registrada' })
+
+    const stockAntes = await getStock(db, codigo)
+    if (stockAntes < cantidad)
+      return res.status(400).json({ mensaje: `Stock insuficiente. Disponible: ${stockAntes} pzas` })
+
+    const stockDespues = stockAntes - cantidad
+
+    const t = db.transaction()
+    await t.begin()
+    try {
+      await t.request()
+        .input('codigo',   sql.VarChar(50), codigo)
+        .input('cantidad', sql.Int,         cantidad)
+        .query(`UPDATE ${INV} SET cantidad = cantidad - @cantidad, ultima_salida = GETDATE() WHERE codigo_barras = @codigo`)
+
+      await t.request()
+        .input('codigo',   sql.VarChar(50), codigo)
+        .input('cantidad', sql.Int,         cantidad)
+        .query(`INSERT INTO ${MOV} (codigo_barras, tipo, cantidad, fecha) VALUES (@codigo, 'salida', @cantidad, GETDATE())`)
+
+      await t.commit()
+    } catch (err) { await t.rollback(); throw err }
+
+    res.json({ ok: true, stockActual: stockDespues, mensaje: 'Merma registrada' })
+  } catch (err) {
+    console.error('merma:', err)
     res.status(500).json({ mensaje: err.message })
   }
 })
@@ -199,27 +219,26 @@ app.post('/api/almacen/salida', async (req, res) => {
 app.get('/api/almacen/movimientos', async (_req, res) => {
   try {
     const db = await getPool()
-    const result = await db.request()
-      .input('alm', sql.BigInt, ALM_BODEGA)
-      .query(`
-        SELECT
-          c.FolConsecutivo                              AS id,
-          ISNULL(v.Art_GTIN, CAST(c.Art_Codigo AS NVARCHAR(50))) AS codigo,
-          v.Art_Descripcion                             AS nombre,
-          CASE WHEN c.CE_Cantidad >= 0 THEN 'entrada' ELSE 'salida' END AS tipo,
-          ABS(c.CE_Cantidad)                            AS cantidad,
-          c.CE_Fecha                                    AS fecha
-        FROM ${COMPUEJE} c
-        OUTER APPLY (
-          SELECT TOP 1 Art_Descripcion, Art_GTIN
-          FROM ${VISTA}
-          WHERE Art_Codigo = c.Art_Codigo
-        ) v
-        WHERE CAST(c.CE_Fecha AS DATE) = CAST(GETDATE() AS DATE)
-          AND c.Alm_Codigo        = @alm
-          AND c.CE_Observaciones  = 'Bodega'
-        ORDER BY c.CE_Fecha DESC
-      `)
+    const result = await db.request().query(`
+      SELECT
+        m.id,
+        m.codigo_barras                              AS codigo,
+        ISNULL(v.Art_Descripcion, m.codigo_barras)   AS nombre,
+        m.tipo,
+        m.cantidad,
+        0                                            AS stock_antes,
+        0                                            AS stock_despues,
+        ''                                           AS usuario,
+        CONVERT(VARCHAR(23), m.fecha, 120)           AS fecha
+      FROM ${MOV} m
+      OUTER APPLY (
+        SELECT TOP 1 Art_Descripcion
+        FROM ${VISTA}
+        WHERE Art_GTIN = m.codigo_barras OR CodAlt_Codigo = m.codigo_barras
+      ) v
+      WHERE CAST(m.fecha AS DATE) = CAST(GETDATE() AS DATE)
+      ORDER BY m.fecha DESC
+    `)
     res.json(result.recordset)
   } catch (err) {
     console.error('movimientos:', err)
@@ -227,26 +246,21 @@ app.get('/api/almacen/movimientos', async (_req, res) => {
   }
 })
 
-// ── GET /buscar?q=... ──────────────────────────────────────────────────────────
-app.get('/buscar', async (req, res) => {
+// ── GET /api/almacen/buscar?q=... ─────────────────────────────────────────────
+app.get('/api/almacen/buscar', async (req, res) => {
   const q = (req.query.q ?? '').toString().trim()
   if (q.length < 2) return res.json([])
   try {
     const db = await getPool()
     const result = await db.request()
-      .input('q',   sql.NVarChar(100), `%${q}%`)
-      .input('alm', sql.BigInt,         ALM_BODEGA)
+      .input('q', sql.NVarChar(100), `%${q}%`)
       .query(`
         SELECT TOP 15
           v.Art_GTIN        AS codigo,
           v.Art_Descripcion AS nombre,
-          ISNULL((
-            SELECT TOP 1 CE_ExistenciaU
-            FROM ${COMPUEJE}
-            WHERE Art_Codigo = v.Art_Codigo AND Alm_Codigo = @alm
-            ORDER BY CE_Fecha DESC, FolConsecutivo DESC
-          ), 0) AS stock
+          ISNULL(i.cantidad, 0) AS stock
         FROM ${VISTA} v
+        LEFT JOIN ${INV} i ON i.codigo_barras = v.Art_GTIN
         WHERE v.Art_Descripcion LIKE @q
            OR v.Art_GTIN        LIKE @q
            OR v.CodAlt_Codigo   LIKE @q
@@ -259,19 +273,49 @@ app.get('/buscar', async (req, res) => {
   }
 })
 
-// ── GET /api/almacen/diagnostico — muestra estructura de Folios ───────────────
-app.get('/api/almacen/diagnostico', async (_req, res) => {
+// ── POST /api/almacen/movimientos/:id/editar ──────────────────────────────────
+app.post('/api/almacen/movimientos/:id/editar', async (req, res) => {
+  const id = parseInt(req.params.id, 10)
+  const { nuevaCantidad } = req.body
+  if (isNaN(id) || !nuevaCantidad || nuevaCantidad <= 0)
+    return res.status(400).json({ mensaje: 'Datos inválidos' })
   try {
     const db = await getPool()
-    const cols = await db.request().query(`
-      SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT
-      FROM INFORMATION_SCHEMA.COLUMNS
-      WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'Folios'
-      ORDER BY ORDINAL_POSITION
-    `)
-    const sample = await db.request().query(`SELECT TOP 3 * FROM [compucaja].[dbo].[Folios]`)
-    res.json({ columnas: cols.recordset, muestra: sample.recordset })
+    const movResult = await db.request()
+      .input('id', sql.Int, id)
+      .query(`SELECT codigo_barras, tipo, cantidad FROM ${MOV} WHERE id = @id`)
+
+    if (movResult.recordset.length === 0)
+      return res.status(404).json({ mensaje: 'Movimiento no encontrado' })
+
+    const { codigo_barras, tipo, cantidad: cantidadVieja } = movResult.recordset[0]
+    const diferencia = nuevaCantidad - cantidadVieja
+    if (diferencia === 0) return res.json({ ok: true, mensaje: 'Sin cambios' })
+
+    const ajuste = tipo === 'entrada' ? diferencia : -diferencia
+
+    if (ajuste < 0) {
+      const stockRes = await db.request()
+        .input('codigo', sql.VarChar(50), codigo_barras)
+        .query(`SELECT ISNULL(cantidad, 0) AS stock FROM ${INV} WHERE codigo_barras = @codigo`)
+      const stockActual = stockRes.recordset[0]?.stock ?? 0
+      if (stockActual + ajuste < 0)
+        return res.status(400).json({ mensaje: `El stock quedaría negativo (${stockActual + ajuste} pzas).` })
+    }
+
+    await db.request()
+      .input('codigo', sql.VarChar(50), codigo_barras)
+      .input('ajuste', sql.Int,         ajuste)
+      .query(`UPDATE ${INV} SET cantidad = cantidad + @ajuste WHERE codigo_barras = @codigo`)
+
+    await db.request()
+      .input('id',            sql.Int, id)
+      .input('nuevaCantidad', sql.Int, nuevaCantidad)
+      .query(`UPDATE ${MOV} SET cantidad = @nuevaCantidad WHERE id = @id`)
+
+    res.json({ ok: true, mensaje: 'Corregido correctamente' })
   } catch (err) {
+    console.error('editar movimiento:', err)
     res.status(500).json({ mensaje: err.message })
   }
 })

@@ -3,12 +3,14 @@ import Recepcion from './pages/Recepcion'
 import Salida from './pages/Salida'
 import Historial from './pages/Historial'
 import Buscar from './pages/Buscar'
+import Merma from './pages/Merma'
 
-type Tab = 'recepcion' | 'salida' | 'historial' | 'buscar'
+type Tab = 'recepcion' | 'salida' | 'historial' | 'buscar' | 'merma'
 
 const TABS: { id: Tab; label: string; emoji: string }[] = [
   { id: 'recepcion', label: 'Recepción', emoji: '📦' },
   { id: 'salida',    label: 'Salida',    emoji: '📤' },
+  { id: 'merma',     label: 'Merma',     emoji: '🗑️' },
   { id: 'historial', label: 'Historial', emoji: '📋' },
   { id: 'buscar',    label: 'Buscar',    emoji: '🔍' },
 ]
@@ -16,9 +18,10 @@ const TABS: { id: Tab; label: string; emoji: string }[] = [
 export default function App() {
   const [tab, setTab] = useState<Tab>('recepcion')
 
-  const headerColor = tab === 'salida' ? '#D85A30' : '#1D9E75'
+  const headerColor = tab === 'salida' ? '#D85A30' : tab === 'merma' ? '#C05621' : '#1D9E75'
   const headerLabel = tab === 'recepcion' ? 'Recepción de mercancía'
     : tab === 'salida'    ? 'Salida de producto'
+    : tab === 'merma'     ? 'Registro de merma'
     : tab === 'historial' ? 'Historial del día'
     : 'Buscar producto'
 
@@ -51,6 +54,7 @@ export default function App() {
       <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain' }}>
         {tab === 'recepcion' && <Recepcion />}
         {tab === 'salida'    && <Salida />}
+        {tab === 'merma'     && <Merma />}
         {tab === 'historial' && <Historial />}
         {tab === 'buscar'    && <Buscar />}
       </div>
@@ -70,8 +74,8 @@ export default function App() {
             style={{
               flex: 1, padding: '12px 0',
               display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
-              borderTop: tab === t.id ? `2.5px solid ${t.id === 'salida' ? '#D85A30' : '#1D9E75'}` : '2.5px solid transparent',
-              color: tab === t.id ? (t.id === 'salida' ? '#D85A30' : '#1D9E75') : '#aaa',
+              borderTop: tab === t.id ? `2.5px solid ${t.id === 'salida' ? '#D85A30' : t.id === 'merma' ? '#C05621' : '#1D9E75'}` : '2.5px solid transparent',
+              color: tab === t.id ? (t.id === 'salida' ? '#D85A30' : t.id === 'merma' ? '#C05621' : '#1D9E75') : '#aaa',
               transition: 'color 0.15s',
               background: 'none', cursor: 'pointer'
             }}

@@ -1,0 +1,25 @@
+# PWA Bodega – TC52
+Control de inventario para Zebra TC52 vía Progressive Web App.
+
+## Paso 1 – Base de Datos
+1. Abre SQL Server Management Studio en la PC del cliente.
+2. Selecciona la base de datos `compucaja`.
+3. Ejecuta el contenido de `api-endpoints/crear_tablas.sql`.
+
+## Paso 2 – Integrar API (:3002)
+1. Instala el driver en tu backend: `npm install mssql`
+2. Coloca `inventario.routes.ts` y regístralo en tu `app.ts` o `server.ts`.
+3. Verifica el `.env` con los datos (sa / password).
+
+## Paso 3 – Preparar PWA (Solo una vez)
+1. Entra a `/pwa-bodega`.
+2. Edita el archivo `.env` y pon la IP local de la computadora (ej. `VITE_API_URL=http://192.168.1.100:3002`).
+3. Ejecuta `npm install` y luego `npm run build`.
+
+## Paso 4 – Arranque Automático en el Cliente
+Para que el servidor corra en segundo plano sin que el cliente vea una ventana negra estorbando:
+1. Asegúrate de que `iniciar-bodega.bat` y `arranque-oculto.vbs` estén en la carpeta principal.
+2. Presiona `Win + R` en la PC del cliente y escribe `shell:startup`.
+3. Crea un **Acceso Directo** (Click derecho -> Crear acceso directo) del archivo `arranque-oculto.vbs`.
+4. Mueve ese acceso directo a la carpeta de Startup que abriste en el paso 2.
+5. ¡Listo! Al encender la PC, la app web de bodega se servirá en segundo plano automáticamente.
