@@ -33,6 +33,7 @@ const sqlConfig = {
 const VISTA = '[compucaja].[dbo].[VArticulosUnificados]'
 const INV   = '[compucaja].[dbo].[inventario_bodega]'
 const MOV   = '[compucaja].[dbo].[movimientos_bodega]'
+const UBIC  = '[compucaja].[dbo].[ubicaciones_bodega]'
 
 let pool = null
 async function getPool() {
@@ -40,7 +41,7 @@ async function getPool() {
   return pool
 }
 
-// Lock en memoria — Node.js es single-thread, por lo que esto es atómico
+// Lock en memoria — Node.js es single-thread, esto es atómico
 const _opsEnCurso = new Map()
 function adquirirLock(codigo, tipo) {
   const key = `${codigo}:${tipo}`
@@ -69,6 +70,13 @@ async function getStock(db, codigo) {
   return r.recordset[0]?.stock ?? 0
 }
 
+async function getUbicacion(db, codigo) {
+  const r = await db.request()
+    .input('codigo', sql.VarChar(50), codigo)
+    .query(`SELECT ubicacion FROM ${INV} WHERE codigo_barras = @codigo`)
+  return r.recordset[0]?.ubicacion ?? null
+}
+
 // ── GET /api/almacen/producto/:codigo ─────────────────────────────────────────
 app.get('/api/almacen/producto/:codigo', async (req, res) => {
   const { codigo } = req.params
@@ -76,8 +84,8 @@ app.get('/api/almacen/producto/:codigo', async (req, res) => {
     const db = await getPool()
     const nombre = await getNombre(db, codigo)
     if (!nombre) return res.status(404).json({ mensaje: 'Producto no encontrado' })
-    const stock = await getStock(db, codigo)
-    res.json({ codigo, nombre, stock })
+    const [stock, ubicacion] = await Promise.all([getStock(db, codigo), getUbicacion(db, codigo)])
+    res.json({ codigo, nombre, stock, ubicacion })
   } catch (err) {
     console.error('getProducto:', err)
     res.status(500).json({ mensaje: err.message })
@@ -115,12 +123,10 @@ app.post('/api/almacen/entrada', async (req, res) => {
           WHEN NOT MATCHED THEN
             INSERT (codigo_barras, cantidad, ultima_entrada) VALUES (@codigo, @cantidad, GETDATE());
         `)
-
       await t.request()
         .input('codigo',   sql.VarChar(50), codigo)
         .input('cantidad', sql.Int,         cantidad)
         .query(`INSERT INTO ${MOV} (codigo_barras, tipo, cantidad, fecha) VALUES (@codigo, 'entrada', @cantidad, GETDATE())`)
-
       await t.commit()
     } catch (err) { await t.rollback(); throw err }
 
@@ -157,12 +163,10 @@ app.post('/api/almacen/salida', async (req, res) => {
         .input('codigo',   sql.VarChar(50), codigo)
         .input('cantidad', sql.Int,         cantidad)
         .query(`UPDATE ${INV} SET cantidad = cantidad - @cantidad, ultima_salida = GETDATE() WHERE codigo_barras = @codigo`)
-
       await t.request()
         .input('codigo',   sql.VarChar(50), codigo)
         .input('cantidad', sql.Int,         cantidad)
         .query(`INSERT INTO ${MOV} (codigo_barras, tipo, cantidad, fecha) VALUES (@codigo, 'salida', @cantidad, GETDATE())`)
-
       await t.commit()
     } catch (err) { await t.rollback(); throw err }
 
@@ -175,7 +179,7 @@ app.post('/api/almacen/salida', async (req, res) => {
 
 // ── POST /api/almacen/merma ────────────────────────────────────────────────────
 app.post('/api/almacen/merma', async (req, res) => {
-  const { codigo, cantidad, motivo, area, notas } = req.body
+  const { codigo, cantidad } = req.body
   if (!codigo || !cantidad || cantidad <= 0)
     return res.status(400).json({ mensaje: 'Datos inválidos' })
   try {
@@ -190,8 +194,6 @@ app.post('/api/almacen/merma', async (req, res) => {
     if (stockAntes < cantidad)
       return res.status(400).json({ mensaje: `Stock insuficiente. Disponible: ${stockAntes} pzas` })
 
-    const stockDespues = stockAntes - cantidad
-
     const t = db.transaction()
     await t.begin()
     try {
@@ -199,16 +201,14 @@ app.post('/api/almacen/merma', async (req, res) => {
         .input('codigo',   sql.VarChar(50), codigo)
         .input('cantidad', sql.Int,         cantidad)
         .query(`UPDATE ${INV} SET cantidad = cantidad - @cantidad, ultima_salida = GETDATE() WHERE codigo_barras = @codigo`)
-
       await t.request()
         .input('codigo',   sql.VarChar(50), codigo)
         .input('cantidad', sql.Int,         cantidad)
         .query(`INSERT INTO ${MOV} (codigo_barras, tipo, cantidad, fecha) VALUES (@codigo, 'salida', @cantidad, GETDATE())`)
-
       await t.commit()
     } catch (err) { await t.rollback(); throw err }
 
-    res.json({ ok: true, stockActual: stockDespues, mensaje: 'Merma registrada' })
+    res.json({ ok: true, stockActual: stockAntes - cantidad, mensaje: 'Merma registrada' })
   } catch (err) {
     console.error('merma:', err)
     res.status(500).json({ mensaje: err.message })
@@ -258,7 +258,8 @@ app.get('/api/almacen/buscar', async (req, res) => {
         SELECT TOP 15
           v.Art_GTIN        AS codigo,
           v.Art_Descripcion AS nombre,
-          ISNULL(i.cantidad, 0) AS stock
+          ISNULL(i.cantidad, 0) AS stock,
+          i.ubicacion
         FROM ${VISTA} v
         LEFT JOIN ${INV} i ON i.codigo_barras = v.Art_GTIN
         WHERE v.Art_Descripcion LIKE @q
@@ -316,6 +317,85 @@ app.post('/api/almacen/movimientos/:id/editar', async (req, res) => {
     res.json({ ok: true, mensaje: 'Corregido correctamente' })
   } catch (err) {
     console.error('editar movimiento:', err)
+    res.status(500).json({ mensaje: err.message })
+  }
+})
+
+// ── GET /api/almacen/ubicaciones ──────────────────────────────────────────────
+app.get('/api/almacen/ubicaciones', async (_req, res) => {
+  try {
+    const db = await getPool()
+    const r = await db.request().query(
+      `SELECT id, nombre, color FROM ${UBIC} WHERE activa = 1 ORDER BY orden, nombre`
+    )
+    res.json(r.recordset)
+  } catch (err) {
+    console.error('ubicaciones:', err)
+    res.status(500).json({ mensaje: err.message })
+  }
+})
+
+// ── POST /api/almacen/ubicaciones ─────────────────────────────────────────────
+app.post('/api/almacen/ubicaciones', async (req, res) => {
+  const { nombre, color } = req.body
+  if (!nombre?.trim()) return res.status(400).json({ mensaje: 'Nombre requerido' })
+  try {
+    const db = await getPool()
+    await db.request()
+      .input('nombre', sql.VarChar(50), nombre.trim())
+      .input('color',  sql.VarChar(7),  color || '#5F5E5A')
+      .query(`INSERT INTO ${UBIC} (nombre, color) VALUES (@nombre, @color)`)
+    const r = await db.request().query(
+      `SELECT id, nombre, color FROM ${UBIC} WHERE activa = 1 ORDER BY orden, nombre`
+    )
+    res.json(r.recordset)
+  } catch (err) {
+    console.error('crear ubicacion:', err)
+    res.status(500).json({ mensaje: err.message })
+  }
+})
+
+// ── DELETE /api/almacen/ubicaciones/:id ───────────────────────────────────────
+app.delete('/api/almacen/ubicaciones/:id', async (req, res) => {
+  const id = parseInt(req.params.id, 10)
+  if (isNaN(id)) return res.status(400).json({ mensaje: 'ID inválido' })
+  try {
+    const db = await getPool()
+    await db.request()
+      .input('id', sql.Int, id)
+      .query(`UPDATE ${UBIC} SET activa = 0 WHERE id = @id`)
+    const r = await db.request().query(
+      `SELECT id, nombre, color FROM ${UBIC} WHERE activa = 1 ORDER BY orden, nombre`
+    )
+    res.json(r.recordset)
+  } catch (err) {
+    console.error('eliminar ubicacion:', err)
+    res.status(500).json({ mensaje: err.message })
+  }
+})
+
+// ── POST /api/almacen/producto-ubicacion ──────────────────────────────────────
+app.post('/api/almacen/producto-ubicacion', async (req, res) => {
+  const { codigo, ubicacion } = req.body
+  if (!codigo) return res.status(400).json({ mensaje: 'Código requerido' })
+  try {
+    const db = await getPool()
+    // Si aún no hay fila en inventario_bodega, creamos una con stock 0
+    await db.request()
+      .input('codigo',    sql.VarChar(50), codigo)
+      .input('ubicacion', sql.VarChar(50), ubicacion || null)
+      .query(`
+        MERGE ${INV} AS target
+        USING (SELECT @codigo AS codigo_barras) AS source
+          ON target.codigo_barras = source.codigo_barras
+        WHEN MATCHED THEN
+          UPDATE SET ubicacion = @ubicacion
+        WHEN NOT MATCHED THEN
+          INSERT (codigo_barras, cantidad, ubicacion) VALUES (@codigo, 0, @ubicacion);
+      `)
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('producto-ubicacion:', err)
     res.status(500).json({ mensaje: err.message })
   }
 })

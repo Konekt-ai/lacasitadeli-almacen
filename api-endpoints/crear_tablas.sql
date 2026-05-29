@@ -69,6 +69,31 @@ IF @ck IS NOT NULL
     EXEC('ALTER TABLE movimientos_bodega DROP CONSTRAINT ' + @ck)
 GO
 
+-- ── Tabla de ubicaciones ─────────────────────────────────────────────────────
+IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='ubicaciones_bodega' AND xtype='U')
+BEGIN
+    CREATE TABLE ubicaciones_bodega (
+      id     INT          IDENTITY(1,1) PRIMARY KEY,
+      nombre VARCHAR(50)  NOT NULL UNIQUE,
+      color  VARCHAR(7)   NOT NULL DEFAULT '#5F5E5A',
+      activa BIT          NOT NULL DEFAULT 1,
+      orden  INT          NOT NULL DEFAULT 99
+    );
+    INSERT INTO ubicaciones_bodega (nombre, color, orden) VALUES
+      ('Bodega',          '#1D9E75', 1),
+      ('Cocina',          '#E07B39', 2),
+      ('Tienda Casita 1', '#3B82F6', 3),
+      ('Tienda Casita 2', '#8B5CF6', 4),
+      ('Refrigerador',    '#06B6D4', 5),
+      ('Otro',            '#6B7280', 6);
+END
+GO
+
+-- ── Columna ubicacion en inventario_bodega ────────────────────────────────────
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('inventario_bodega') AND name = 'ubicacion')
+    ALTER TABLE inventario_bodega ADD ubicacion VARCHAR(50) NULL;
+GO
+
 -- ── Vista de inventario completo ──────────────────────────────────────────────
 IF OBJECT_ID('v_inventario_completo') IS NOT NULL
     DROP VIEW v_inventario_completo;
