@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useBarcodeScan } from '../hooks/useBarcodeScan'
 import { api, type Producto } from '../api/inventario'
+import { beepScan, beepError } from '../utils/beep'
 
 function stockColor(stock: number) {
   if (stock === 0) return '#bbb'
@@ -24,9 +25,11 @@ export default function Buscar() {
     try {
       const data = await api.buscarProductos(termino)
       setResultados(data)
+      if (data.length > 0) beepScan()
     } catch (e) {
       setError((e as Error).message)
       setResultados([])
+      beepError()
     } finally {
       setCargando(false)
     }

@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { api, type Producto, type Ubicacion, type PedidoResumen } from '../api/inventario'
 import { useBarcodeScan } from '../hooks/useBarcodeScan'
+import { beepScan, beepOk, beepError } from '../utils/beep'
 
 type Paso = 'pedido' | 'scan' | 'confirmar' | 'exito' | 'error'
 
@@ -58,9 +59,11 @@ export default function Recepcion() {
       setProducto(prod)
       setCantidad(1)
       setPaso('confirmar')
+      beepScan()
     } catch (e) {
       setError((e as Error).message)
       setPaso('error')
+      beepError()
     } finally {
       setCargando(false)
     }
@@ -76,9 +79,11 @@ export default function Recepcion() {
       const res = await api.registrarEntrada(producto.codigo, cantidad, producto.nombre, pedidoId, ubicSelec)
       setNuevoStock(res.stockActual)
       setPaso('exito')
+      beepOk()
     } catch (e) {
       setError((e as Error).message)
       setPaso('error')
+      beepError()
     } finally {
       registrandoRef.current = false
       setCargando(false)

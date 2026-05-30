@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react'
 import { api, type Producto, type StockUbicacion, type Ubicacion } from '../api/inventario'
 import { useBarcodeScan } from '../hooks/useBarcodeScan'
+import { beepScan, beepOk, beepError } from '../utils/beep'
 
 type Paso = 'scan' | 'elegirOrigen' | 'elegirDestino' | 'cantidad' | 'exito' | 'error'
 
@@ -41,6 +42,7 @@ export default function Salida() {
 
       if (prod.stock === 0 || conStock.length === 0) {
         setError('Este producto no tiene stock registrado')
+        beepError()
         return
       }
       // Si solo hay una ubicación, pre-seleccionarla
@@ -50,8 +52,10 @@ export default function Salida() {
       } else {
         setPaso('elegirOrigen')
       }
+      beepScan()
     } catch (e) {
       setError((e as Error).message)
+      beepError()
     } finally {
       setCargando(false)
     }
@@ -64,6 +68,7 @@ export default function Salida() {
     if (cantidad > origen.cantidad) {
       setError(`Solo hay ${origen.cantidad} pzas en ${origen.ubicacion}`)
       setPaso('error')
+      beepError()
       return
     }
     registrandoRef.current = true
@@ -71,9 +76,11 @@ export default function Salida() {
     try {
       await api.trasladar(producto.codigo, cantidad, origen.ubicacion, destino.nombre)
       setPaso('exito')
+      beepOk()
     } catch (e) {
       setError((e as Error).message)
       setPaso('error')
+      beepError()
     } finally {
       registrandoRef.current = false
       setCargando(false)

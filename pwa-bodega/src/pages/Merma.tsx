@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react'
 import { api, type Producto, type MotivoMerma, type StockUbicacion } from '../api/inventario'
 import { useBarcodeScan } from '../hooks/useBarcodeScan'
+import { beepScan, beepOk, beepError } from '../utils/beep'
 
 type Paso = 'scan' | 'confirmar' | 'exito' | 'error'
 
@@ -38,9 +39,11 @@ export default function Merma() {
       const primeraConStock = (prod.stockPorUbicacion ?? []).find(u => u.cantidad > 0)
       setUbicacion(primeraConStock?.ubicacion ?? 'Bodega')
       setPaso('confirmar')
+      beepScan()
     } catch (e) {
       setError((e as Error).message)
       setPaso('error')
+      beepError()
     } finally {
       setCargando(false)
     }
@@ -56,9 +59,11 @@ export default function Merma() {
       const res = await api.registrarMerma(producto.codigo, cantidad, motivo, ubicacion, producto.nombre, notas || undefined)
       setNuevoStock(res.stockActual)
       setPaso('exito')
+      beepOk()
     } catch (e) {
       setError((e as Error).message)
       setPaso('error')
+      beepError()
     } finally {
       registrandoRef.current = false
       setCargando(false)
