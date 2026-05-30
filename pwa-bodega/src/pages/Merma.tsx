@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react'
-import { api, type Producto, type MotivoMerma } from '../api/inventario'
+import { api, type Producto, type MotivoMerma, type StockUbicacion } from '../api/inventario'
 import { useBarcodeScan } from '../hooks/useBarcodeScan'
 
 type Paso = 'scan' | 'confirmar' | 'exito' | 'error'
@@ -12,24 +12,17 @@ const MOTIVOS: { id: MotivoMerma; label: string; emoji: string; color: string }[
   { id: 'otro',        label: 'Otro',        emoji: '❓', color: '#5F5E5A' },
 ]
 
-const AREAS = [
-  { id: 'bodega',       label: 'Bodega' },
-  { id: 'cocina',       label: 'Cocina' },
-  { id: 'tienda',       label: 'Tienda' },
-  { id: 'refrigerador', label: 'Refri' },
-]
-
 export default function Merma() {
-  const [paso,      setPaso]      = useState<Paso>('scan')
-  const [producto,  setProducto]  = useState<Producto | null>(null)
-  const [cantidad,  setCantidad]  = useState(1)
-  const [motivo,    setMotivo]    = useState<MotivoMerma>('vencimiento')
-  const [area,      setArea]      = useState('bodega')
-  const [notas,     setNotas]     = useState('')
-  const [nuevoStock,setNuevoStock]= useState(0)
-  const [error,     setError]     = useState('')
-  const [cargando,  setCargando]  = useState(false)
-  const [inputManual,setInputManual] = useState('')
+  const [paso,       setPaso]       = useState<Paso>('scan')
+  const [producto,   setProducto]   = useState<Producto | null>(null)
+  const [cantidad,   setCantidad]   = useState(1)
+  const [motivo,     setMotivo]     = useState<MotivoMerma>('vencimiento')
+  const [ubicacion,  setUbicacion]  = useState<string>('Sin ubicar')
+  const [notas,      setNotas]      = useState('')
+  const [nuevoStock, setNuevoStock] = useState(0)
+  const [error,      setError]      = useState('')
+  const [cargando,   setCargando]   = useState(false)
+  const [inputManual,setInputManual]= useState('')
   const registrandoRef = useRef(false)
 
   const buscarProducto = useCallback(async (codigo: string) => {
@@ -40,8 +33,10 @@ export default function Merma() {
       setProducto(prod)
       setCantidad(1)
       setMotivo('vencimiento')
-      setArea('bodega')
       setNotas('')
+      // Pre-seleccionar la primera ubicación con stock
+      const primeraConStock = (prod.stockPorUbicacion ?? []).find(u => u.cantidad > 0)
+      setUbicacion(primeraConStock?.ubicacion ?? 'Bodega')
       setPaso('confirmar')
     } catch (e) {
       setError((e as Error).message)
@@ -58,7 +53,7 @@ export default function Merma() {
     registrandoRef.current = true
     setCargando(true)
     try {
-      const res = await api.registrarMerma(producto.codigo, cantidad, motivo, area, producto.nombre, notas || undefined)
+      const res = await api.registrarMerma(producto.codigo, cantidad, motivo, ubicacion, producto.nombre, notas || undefined)
       setNuevoStock(res.stockActual)
       setPaso('exito')
     } catch (e) {
@@ -75,15 +70,27 @@ export default function Merma() {
     setProducto(null)
     setCantidad(1)
     setMotivo('vencimiento')
-    setArea('bodega')
+    setUbicacion('Sin ubicar')
     setNotas('')
     setInputManual('')
     setError('')
   }
 
-  const motivoActual = MOTIVOS.find(m => m.id === motivo)!
+  function seleccionarUbicacion(u: StockUbicacion) {
+    setUbicacion(u.ubicacion)
+    setCantidad(prev => Math.min(prev, u.cantidad))
+  }
 
-  // ── Pantalla: escanear ───────────────────────────────────────────────────────
+  const motivoActual = MOTIVOS.find(m => m.id === motivo)!
+  // Si no hay desglose por ubicación pero hay stock, mostrar Bodega como opción
+  let conStock = (producto?.stockPorUbicacion ?? []).filter(u => u.cantidad > 0)
+  if (conStock.length === 0 && (producto?.stock ?? 0) > 0) {
+    conStock = [{ ubicacion: 'Bodega', cantidad: producto!.stock, color: '#1D9E75' }]
+  }
+  const ubicActual = conStock.find(u => u.ubicacion === ubicacion)
+  const stockDisponible = ubicActual?.cantidad ?? 0
+
+  // ── Escanear ──────────────────────────────────────────────────────────────────
   if (paso === 'scan') return (
     <div style={{ padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div style={{
@@ -122,7 +129,7 @@ export default function Merma() {
     </div>
   )
 
-  // ── Pantalla: confirmar ──────────────────────────────────────────────────────
+  // ── Confirmar ─────────────────────────────────────────────────────────────────
   if (paso === 'confirmar' && producto) return (
     <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
 
@@ -130,107 +137,123 @@ export default function Merma() {
       <div className="card">
         <p style={{ fontSize: 18, fontWeight: 600, marginBottom: 4 }}>{producto.nombre}</p>
         <p style={{ fontSize: 12, color: '#aaa', fontFamily: 'monospace', marginBottom: 10 }}>{producto.codigo}</p>
-        <span className={producto.stock === 0 ? 'badge badge-zero' : producto.stock < 5 ? 'badge badge-low' : 'badge badge-ok'}>
-          Stock actual: {producto.stock} pzas
-        </span>
-      </div>
-
-      {/* Motivo */}
-      <div>
-        <p style={{ fontSize: 14, color: '#5F5E5A', marginBottom: 8 }}>Motivo de baja</p>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-          {MOTIVOS.map(m => (
-            <button key={m.id} onClick={() => setMotivo(m.id)}
-              style={{
-                padding: '12px 8px', borderRadius: 12, cursor: 'pointer',
-                border: motivo === m.id ? `2px solid ${m.color}` : '1.5px solid rgba(0,0,0,0.10)',
-                background: motivo === m.id ? `${m.color}18` : 'white',
-                display: 'flex', alignItems: 'center', gap: 8,
-              }}>
-              <span style={{ fontSize: 20 }}>{m.emoji}</span>
-              <span style={{ fontSize: 13, fontWeight: motivo === m.id ? 600 : 400, color: motivo === m.id ? m.color : '#5F5E5A' }}>
-                {m.label}
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Área */}
-      <div>
-        <p style={{ fontSize: 14, color: '#5F5E5A', marginBottom: 8 }}>Área de origen</p>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {AREAS.map(a => (
-            <button key={a.id} onClick={() => setArea(a.id)}
-              style={{
-                padding: '8px 14px', borderRadius: 10, cursor: 'pointer',
-                border: area === a.id ? '2px solid #1D9E75' : '1.5px solid rgba(0,0,0,0.10)',
-                background: area === a.id ? '#E1F5EE' : 'white',
-                fontSize: 13, fontWeight: area === a.id ? 600 : 400,
-                color: area === a.id ? '#085041' : '#5F5E5A',
-              }}>
-              {a.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Cantidad */}
-      <div>
-        <p style={{ fontSize: 14, color: '#5F5E5A', marginBottom: 10 }}>Cantidad a dar de baja</p>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'center' }}>
-          <button onClick={() => setCantidad(c => Math.max(1, c - 1))}
-            style={{ width: 64, height: 64, fontSize: 28, fontWeight: 300, border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 14, background: 'white', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            −
-          </button>
-          <input
-            data-manual="true" type="number" value={cantidad} min={1}
-            onChange={e => setCantidad(Math.max(1, parseInt(e.target.value) || 1))}
-            style={{
-              width: 100, textAlign: 'center', fontSize: 32, fontWeight: 700,
-              border: `1.5px solid ${motivoActual.color}66`, borderRadius: 12,
-              padding: '10px 0', background: 'white', color: '#1a1a18',
-            }}
-          />
-          <button onClick={() => setCantidad(c => c + 1)}
-            style={{ width: 64, height: 64, fontSize: 28, fontWeight: 300, border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 14, background: 'white', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            +
-          </button>
-        </div>
-        <p style={{ fontSize: 13, color: motivoActual.color, textAlign: 'center', marginTop: 8 }}>
-          Stock resultante: {producto.stock - cantidad} pzas
-          {producto.stock - cantidad < 0 && ' ⚠️'}
+        <p style={{ fontSize: 14, fontWeight: 700, color: producto.stock === 0 ? '#D85A30' : '#1D9E75' }}>
+          Total en bodega: {producto.stock} pzas
         </p>
       </div>
 
-      {/* Nota */}
-      <div>
-        <p style={{ fontSize: 13, color: '#5F5E5A', marginBottom: 6 }}>Nota (opcional)</p>
-        <input
-          data-manual="true"
-          value={notas}
-          onChange={e => setNotas(e.target.value)}
-          placeholder="Ej: lote vencido, proveedor X..."
-          style={{
-            width: '100%', padding: '12px 14px', fontSize: 14, boxSizing: 'border-box',
-            border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 12,
-            background: 'white', color: '#1a1a18',
-          }}
-        />
-      </div>
+      {/* Ubicación de origen */}
+      {conStock.length === 0 ? (
+        <div style={{ background: '#FAECE7', borderRadius: 12, padding: 14, textAlign: 'center' }}>
+          <p style={{ color: '#712B13', fontSize: 14, fontWeight: 600 }}>Sin stock en ninguna ubicación</p>
+          <button className="btn-secondary" onClick={reset} style={{ marginTop: 10 }}>Cancelar</button>
+        </div>
+      ) : (
+        <>
+          {/* Selección de origen */}
+          <div>
+            <p style={{ fontSize: 14, color: '#5F5E5A', marginBottom: 8 }}>Desde qué ubicación</p>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {conStock.map(u => (
+                <button
+                  key={u.ubicacion}
+                  onClick={() => seleccionarUbicacion(u)}
+                  style={{
+                    padding: '10px 14px', borderRadius: 10, cursor: 'pointer',
+                    border: ubicacion === u.ubicacion ? `2px solid ${u.color}` : '1.5px solid rgba(0,0,0,0.10)',
+                    background: ubicacion === u.ubicacion ? `${u.color}18` : 'white',
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+                  }}>
+                  <span style={{ fontSize: 12, fontWeight: ubicacion === u.ubicacion ? 700 : 400, color: ubicacion === u.ubicacion ? u.color : '#5F5E5A' }}>
+                    {u.ubicacion}
+                  </span>
+                  <span style={{ fontSize: 10, color: '#aaa' }}>{u.cantidad} pzas</span>
+                </button>
+              ))}
+            </div>
+          </div>
 
-      <button onClick={confirmar} disabled={cargando}
-        style={{
-          padding: '16px', border: 'none', borderRadius: 14, cursor: 'pointer',
-          background: motivoActual.color, color: 'white', fontSize: 15, fontWeight: 600,
-        }}>
-        {cargando ? 'Registrando...' : `${motivoActual.emoji} Confirmar baja · ${cantidad} pzas`}
-      </button>
-      <button className="btn-secondary" onClick={reset}>Cancelar</button>
+          {/* Motivo */}
+          <div>
+            <p style={{ fontSize: 14, color: '#5F5E5A', marginBottom: 8 }}>Motivo de baja</p>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              {MOTIVOS.map(m => (
+                <button key={m.id} onClick={() => setMotivo(m.id)}
+                  style={{
+                    padding: '12px 8px', borderRadius: 12, cursor: 'pointer',
+                    border: motivo === m.id ? `2px solid ${m.color}` : '1.5px solid rgba(0,0,0,0.10)',
+                    background: motivo === m.id ? `${m.color}18` : 'white',
+                    display: 'flex', alignItems: 'center', gap: 8,
+                  }}>
+                  <span style={{ fontSize: 20 }}>{m.emoji}</span>
+                  <span style={{ fontSize: 13, fontWeight: motivo === m.id ? 600 : 400, color: motivo === m.id ? m.color : '#5F5E5A' }}>
+                    {m.label}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Cantidad */}
+          <div>
+            <p style={{ fontSize: 14, color: '#5F5E5A', marginBottom: 10 }}>Cantidad a dar de baja</p>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'center' }}>
+              <button onClick={() => setCantidad(c => Math.max(1, c - 1))}
+                style={{ width: 64, height: 64, fontSize: 28, fontWeight: 300, border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 14, background: 'white', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                −
+              </button>
+              <input
+                data-manual="true" type="number" value={cantidad} min={1} max={stockDisponible}
+                onChange={e => setCantidad(Math.min(stockDisponible || 999, Math.max(1, parseInt(e.target.value) || 1)))}
+                style={{
+                  width: 100, textAlign: 'center', fontSize: 32, fontWeight: 700,
+                  border: `1.5px solid ${motivoActual.color}66`, borderRadius: 12,
+                  padding: '10px 0', background: 'white', color: '#1a1a18',
+                }}
+              />
+              <button onClick={() => setCantidad(c => Math.min(stockDisponible || 999, c + 1))}
+                style={{ width: 64, height: 64, fontSize: 28, fontWeight: 300, border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 14, background: 'white', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                +
+              </button>
+            </div>
+            {ubicActual && (
+              <p style={{ fontSize: 13, color: motivoActual.color, textAlign: 'center', marginTop: 8 }}>
+                Quedan en {ubicacion}: {stockDisponible - cantidad} pzas
+                {stockDisponible - cantidad < 0 && ' ⚠️'}
+              </p>
+            )}
+          </div>
+
+          {/* Nota */}
+          <div>
+            <p style={{ fontSize: 13, color: '#5F5E5A', marginBottom: 6 }}>Nota (opcional)</p>
+            <input
+              data-manual="true"
+              value={notas}
+              onChange={e => setNotas(e.target.value)}
+              placeholder="Ej: lote vencido, proveedor X..."
+              style={{
+                width: '100%', padding: '12px 14px', fontSize: 14, boxSizing: 'border-box',
+                border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 12,
+                background: 'white', color: '#1a1a18',
+              }}
+            />
+          </div>
+
+          <button onClick={confirmar} disabled={cargando}
+            style={{
+              padding: '16px', border: 'none', borderRadius: 14, cursor: 'pointer',
+              background: motivoActual.color, color: 'white', fontSize: 15, fontWeight: 600,
+            }}>
+            {cargando ? 'Registrando...' : `${motivoActual.emoji} Confirmar baja · ${cantidad} pzas`}
+          </button>
+          <button className="btn-secondary" onClick={reset}>Cancelar</button>
+        </>
+      )}
     </div>
   )
 
-  // ── Pantalla: éxito ──────────────────────────────────────────────────────────
+  // ── Éxito ─────────────────────────────────────────────────────────────────────
   if (paso === 'exito' && producto) return (
     <div style={{
       padding: '40px 24px', display: 'flex', flexDirection: 'column',
@@ -246,8 +269,9 @@ export default function Merma() {
         {motivoActual.emoji} {motivoActual.label} · −{cantidad} pzas
       </p>
       <p style={{ fontSize: 14, color: '#5F5E5A' }}>{producto.nombre}</p>
+      <p style={{ fontSize: 13, color: '#aaa' }}>📍 {ubicacion}</p>
       <p style={{ fontSize: 14, color: '#C05621', fontWeight: 600 }}>
-        Stock nuevo: {nuevoStock} pzas
+        Stock total nuevo: {nuevoStock} pzas
       </p>
       <div style={{ marginTop: 20, width: '100%' }}>
         <button onClick={reset}
@@ -258,7 +282,7 @@ export default function Merma() {
     </div>
   )
 
-  // ── Pantalla: error ──────────────────────────────────────────────────────────
+  // ── Error ─────────────────────────────────────────────────────────────────────
   if (paso === 'error') return (
     <div style={{
       padding: '40px 24px', display: 'flex', flexDirection: 'column',

@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { api, type Producto, type Ubicacion, type PedidoResumen } from '../api/inventario'
 import { useBarcodeScan } from '../hooks/useBarcodeScan'
 
-type Paso = 'pedido' | 'scan' | 'confirmar' | 'ubicar' | 'exito' | 'error'
+type Paso = 'pedido' | 'scan' | 'confirmar' | 'exito' | 'error'
 
 export default function Recepcion() {
   const [paso,        setPaso]        = useState<Paso>('pedido')
@@ -13,7 +13,7 @@ export default function Recepcion() {
   const [cargando,    setCargando]    = useState(false)
   const [inputManual, setInputManual] = useState('')
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
-  const [ubicSelec,   setUbicSelec]   = useState<string | null>(null)
+  const [ubicSelec,   setUbicSelec]   = useState<string>('Sin ubicar')
   const [pedidos,     setPedidos]     = useState<PedidoResumen[]>([])
   const [pedidoId,    setPedidoId]    = useState<number | null>(null)
   const [pedidoFolio, setPedidoFolio] = useState<string | null>(null)
@@ -22,7 +22,10 @@ export default function Recepcion() {
   const registrandoRef = useRef(false)
 
   useEffect(() => {
-    api.getUbicaciones().then(setUbicaciones).catch(() => {})
+    api.getUbicaciones().then(u => {
+      setUbicaciones(u)
+      if (u.length > 0) setUbicSelec(u[0].nombre)
+    }).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -53,7 +56,6 @@ export default function Recepcion() {
     try {
       const prod = await api.getProducto(codigo.trim())
       setProducto(prod)
-      setUbicSelec(prod.ubicacion ?? null)
       setCantidad(1)
       setPaso('confirmar')
     } catch (e) {
@@ -71,9 +73,9 @@ export default function Recepcion() {
     registrandoRef.current = true
     setCargando(true)
     try {
-      const res = await api.registrarEntrada(producto.codigo, cantidad, producto.nombre, pedidoId)
+      const res = await api.registrarEntrada(producto.codigo, cantidad, producto.nombre, pedidoId, ubicSelec)
       setNuevoStock(res.stockActual)
-      setPaso('ubicar')
+      setPaso('exito')
     } catch (e) {
       setError((e as Error).message)
       setPaso('error')
@@ -83,21 +85,13 @@ export default function Recepcion() {
     }
   }
 
-  async function asignarYTerminar(ubicacion: string | null) {
-    if (producto && ubicacion) {
-      try { await api.setUbicacion(producto.codigo, ubicacion) } catch {}
-      setUbicSelec(ubicacion)
-    }
-    setPaso('exito')
-  }
-
   function reset() {
     setPaso('scan')
     setProducto(null)
     setCantidad(1)
     setInputManual('')
     setError('')
-    setUbicSelec(null)
+    if (ubicaciones.length > 0) setUbicSelec(ubicaciones[0].nombre)
   }
 
   function resetTotal() {
@@ -108,7 +102,6 @@ export default function Recepcion() {
     setCantidad(1)
     setInputManual('')
     setError('')
-    setUbicSelec(null)
   }
 
   function stockClass(s: number) {
@@ -117,7 +110,7 @@ export default function Recepcion() {
     return 'badge badge-ok'
   }
 
-  const colorUbic = ubicaciones.find(u => u.nombre === ubicSelec)?.color ?? '#3B82F6'
+  const colorUbic = ubicaciones.find(u => u.nombre === ubicSelec)?.color ?? '#1D9E75'
 
   // ── Selección de pedido ──────────────────────────────────────────────────────
   if (paso === 'pedido') return (
@@ -192,8 +185,7 @@ export default function Recepcion() {
         onClick={() => seleccionarPedido(null, null)}
         style={{
           padding: '14px', border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 14,
-          background: 'white', fontSize: 14, color: '#5F5E5A', cursor: 'pointer',
-          fontWeight: 500,
+          background: 'white', fontSize: 14, color: '#5F5E5A', cursor: 'pointer', fontWeight: 500,
         }}
       >
         Continuar sin orden de compra →
@@ -210,18 +202,10 @@ export default function Recepcion() {
           display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
         }}>
           <div>
-            <p style={{ fontSize: 11, color: '#085041', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-              Orden activa
-            </p>
-            <p style={{ fontSize: 14, fontWeight: 700, color: '#085041', fontFamily: 'monospace' }}>
-              {pedidoFolio}
-            </p>
+            <p style={{ fontSize: 11, color: '#085041', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>Orden activa</p>
+            <p style={{ fontSize: 14, fontWeight: 700, color: '#085041', fontFamily: 'monospace' }}>{pedidoFolio}</p>
           </div>
-          <button
-            onClick={resetTotal}
-            style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: '#085041', opacity: 0.5, padding: '4px 8px' }}
-            title="Cambiar orden"
-          >✕</button>
+          <button onClick={resetTotal} style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: '#085041', opacity: 0.5, padding: '4px 8px' }}>✕</button>
         </div>
       )}
 
@@ -261,14 +245,11 @@ export default function Recepcion() {
     </div>
   )
 
-  // ── Confirmar cantidad ───────────────────────────────────────────────────────
+  // ── Confirmar cantidad + ubicación ───────────────────────────────────────────
   if (paso === 'confirmar' && producto) return (
     <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
       {pedidoFolio && (
-        <div style={{
-          background: '#E5F7F0', borderRadius: 10, padding: '8px 12px',
-          display: 'flex', alignItems: 'center', gap: 8,
-        }}>
+        <div style={{ background: '#E5F7F0', borderRadius: 10, padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 13, color: '#085041' }}>📋</span>
           <span style={{ fontSize: 12, fontWeight: 600, color: '#085041', fontFamily: 'monospace' }}>{pedidoFolio}</span>
         </div>
@@ -280,6 +261,7 @@ export default function Recepcion() {
         <span className={stockClass(producto.stock)}>Stock actual: {producto.stock} pzas</span>
       </div>
 
+      {/* Cantidad */}
       <div>
         <p style={{ fontSize: 14, color: '#5F5E5A', marginBottom: 10 }}>¿Cuántas piezas llegaron?</p>
         <div style={{ display: 'flex', gap: 12, alignItems: 'stretch' }}>
@@ -309,58 +291,40 @@ export default function Recepcion() {
         </p>
       </div>
 
+      {/* Ubicación destino */}
+      {ubicaciones.length > 0 && (
+        <div>
+          <p style={{ fontSize: 14, color: '#5F5E5A', marginBottom: 8 }}>¿Dónde va este producto?</p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            {ubicaciones.map(u => (
+              <button
+                key={u.id}
+                onClick={() => setUbicSelec(u.nombre)}
+                style={{
+                  padding: '14px 10px', borderRadius: 12, cursor: 'pointer',
+                  border: ubicSelec === u.nombre ? `2px solid ${u.color}` : '1.5px solid rgba(0,0,0,0.08)',
+                  background: ubicSelec === u.nombre ? `${u.color}18` : 'white',
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
+                }}
+              >
+                <div style={{ width: 10, height: 10, borderRadius: '50%', background: u.color }} />
+                <span style={{
+                  fontSize: 12, fontWeight: ubicSelec === u.nombre ? 700 : 400,
+                  color: ubicSelec === u.nombre ? u.color : '#5F5E5A',
+                  textAlign: 'center', lineHeight: 1.3,
+                }}>
+                  {u.nombre}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <button className="btn-primary" onClick={confirmar} disabled={cargando}>
         {cargando ? 'Guardando...' : '✓ Confirmar entrada'}
       </button>
       <button className="btn-secondary" onClick={reset}>Cancelar</button>
-    </div>
-  )
-
-  // ── Asignar ubicación ────────────────────────────────────────────────────────
-  if (paso === 'ubicar' && producto) return (
-    <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ textAlign: 'center', padding: '8px 0' }}>
-        <p style={{ fontSize: 16, fontWeight: 700, color: '#085041' }}>
-          ✓ +{cantidad} pzas registradas
-        </p>
-        <p style={{ fontSize: 13, color: '#5F5E5A', marginTop: 4 }}>{producto.nombre}</p>
-      </div>
-
-      <p style={{ fontSize: 15, fontWeight: 600, color: '#1a1a18' }}>¿Dónde va este producto?</p>
-
-      {ubicaciones.length === 0 ? (
-        <p style={{ textAlign: 'center', color: '#aaa', fontSize: 13 }}>
-          Sin ubicaciones. Usa ⚙ para configurarlas.
-        </p>
-      ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-          {ubicaciones.map(u => (
-            <button
-              key={u.id}
-              onClick={() => asignarYTerminar(u.nombre)}
-              style={{
-                padding: '20px 12px', borderRadius: 14, cursor: 'pointer',
-                border: ubicSelec === u.nombre ? `2.5px solid ${u.color}` : '1.5px solid rgba(0,0,0,0.10)',
-                background: ubicSelec === u.nombre ? `${u.color}18` : 'white',
-                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
-              }}
-            >
-              <div style={{ width: 14, height: 14, borderRadius: '50%', background: u.color }} />
-              <span style={{
-                fontSize: 13, fontWeight: ubicSelec === u.nombre ? 700 : 500,
-                color: ubicSelec === u.nombre ? u.color : '#1a1a18',
-                textAlign: 'center', lineHeight: 1.3,
-              }}>
-                {u.nombre}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-
-      <button className="btn-secondary" onClick={() => asignarYTerminar(null)}>
-        Omitir ubicación
-      </button>
     </div>
   )
 
@@ -378,14 +342,12 @@ export default function Recepcion() {
       <p style={{ fontSize: 20, fontWeight: 700, color: '#085041' }}>Entrada registrada</p>
       <p style={{ fontSize: 15, color: '#5F5E5A' }}>+{cantidad} pzas · {producto.nombre}</p>
       <p style={{ fontSize: 14, color: '#1D9E75', fontWeight: 600 }}>Stock nuevo: {nuevoStock} pzas</p>
-      {ubicSelec && (
-        <span style={{
-          fontSize: 13, padding: '5px 14px', borderRadius: 20, fontWeight: 600,
-          background: `${colorUbic}20`, color: colorUbic,
-        }}>
-          📍 {ubicSelec}
-        </span>
-      )}
+      <span style={{
+        fontSize: 13, padding: '5px 14px', borderRadius: 20, fontWeight: 600,
+        background: `${colorUbic}20`, color: colorUbic,
+      }}>
+        📍 {ubicSelec}
+      </span>
       {pedidoFolio && (
         <span style={{
           fontSize: 12, padding: '4px 12px', borderRadius: 20,

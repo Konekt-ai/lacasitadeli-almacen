@@ -15,7 +15,7 @@ const TABS: { id: Tab; label: string; emoji: string }[] = [
   { id: 'merma',     label: 'Merma',     emoji: '🗑️' },
   { id: 'historial', label: 'Historial', emoji: '📋' },
   { id: 'buscar',    label: 'Buscar',    emoji: '🔍' },
-  { id: 'ubicar',    label: 'Ubicar',    emoji: '📍' },
+  { id: 'ubicar',    label: 'Inventario',emoji: '📊' },
 ]
 
 const TAB_COLOR: Record<Tab, string> = {
@@ -33,7 +33,7 @@ const TAB_LABEL: Record<Tab, string> = {
   merma:     'Registro de merma',
   historial: 'Historial del día',
   buscar:    'Buscar producto',
-  ubicar:    'Asignar ubicación',
+  ubicar:    'Inventario general',
 }
 
 export default function App() {

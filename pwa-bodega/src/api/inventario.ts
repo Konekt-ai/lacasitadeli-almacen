@@ -1,8 +1,14 @@
+export interface StockUbicacion {
+  ubicacion: string
+  cantidad: number
+  color: string
+}
+
 export interface Producto {
   codigo: string
   nombre: string
   stock: number
-  ubicacion?: string | null
+  stockPorUbicacion?: StockUbicacion[]
 }
 
 export interface MovimientoResponse {
@@ -15,12 +21,13 @@ export interface Movimiento {
   id: number
   codigo: string
   nombre: string | null
-  tipo: 'entrada' | 'salida'
+  tipo: 'entrada' | 'salida' | 'merma'
   cantidad: number
   stock_antes: number
   stock_despues: number
   usuario: string
   fecha: string
+  ubicacion?: string | null
 }
 
 export interface Ubicacion {
@@ -71,22 +78,22 @@ export const api = {
   getProducto: (codigo: string) =>
     request<Producto>(`/api/almacen/producto/${encodeURIComponent(codigo)}`),
 
-  registrarEntrada: (codigo: string, cantidad: number, nombre?: string, pedidoId?: number | null) =>
+  registrarEntrada: (codigo: string, cantidad: number, nombre?: string, pedidoId?: number | null, ubicacion?: string) =>
     request<MovimientoResponse>('/api/almacen/entrada', {
       method: 'POST',
-      body: JSON.stringify({ codigo, cantidad, nombre, pedido_id: pedidoId ?? null }),
+      body: JSON.stringify({ codigo, cantidad, nombre, pedido_id: pedidoId ?? null, ubicacion: ubicacion ?? 'Sin ubicar' }),
     }),
 
-  registrarSalida: (codigo: string, cantidad: number, nombre?: string) =>
+  registrarSalida: (codigo: string, cantidad: number, ubicacion: string, nombre?: string) =>
     request<MovimientoResponse>('/api/almacen/salida', {
       method: 'POST',
-      body: JSON.stringify({ codigo, cantidad, nombre }),
+      body: JSON.stringify({ codigo, cantidad, ubicacion, nombre }),
     }),
 
-  registrarMerma: (codigo: string, cantidad: number, motivo: MotivoMerma, area: string, nombre?: string, notas?: string) =>
+  registrarMerma: (codigo: string, cantidad: number, motivo: MotivoMerma, ubicacion: string, nombre?: string, notas?: string) =>
     request<MovimientoResponse>('/api/almacen/merma', {
       method: 'POST',
-      body: JSON.stringify({ codigo, cantidad, motivo, area, nombre, notas }),
+      body: JSON.stringify({ codigo, cantidad, motivo, ubicacion, nombre, notas }),
     }),
 
   getMovimientos: () =>
@@ -101,7 +108,12 @@ export const api = {
   buscarProductos: (q: string) =>
     request<Producto[]>(`/api/almacen/buscar?q=${encodeURIComponent(q)}`),
 
-  // ── Ubicaciones (ahora usa el endpoint unificado con el admin) ────────────────
+  trasladar: (codigo: string, cantidad: number, de_ubicacion: string, a_ubicacion: string) =>
+    request<MovimientoResponse>('/api/almacen/traslado', {
+      method: 'POST',
+      body: JSON.stringify({ codigo, cantidad, de_ubicacion, a_ubicacion }),
+    }),
+
   getUbicaciones: () =>
     request<Ubicacion[]>('/api/almacen/ubicaciones/areas'),
 
@@ -114,13 +126,6 @@ export const api = {
   eliminarUbicacion: (id: number) =>
     request<Ubicacion[]>(`/api/almacen/ubicaciones/areas/${id}`, { method: 'DELETE' }),
 
-  setUbicacion: (codigo: string, ubicacion: string | null) =>
-    request<{ ok: boolean }>('/api/almacen/producto-ubicacion', {
-      method: 'POST',
-      body: JSON.stringify({ codigo, ubicacion }),
-    }),
-
-  // ── Pedidos de recepción ──────────────────────────────────────────────────────
   getPedidosAbiertos: () =>
     request<PedidoResumen[]>('/api/almacen/pedidos?estado=activos'),
 }

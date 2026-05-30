@@ -1,181 +1,120 @@
-import { useState, useCallback, useEffect } from 'react'
-import { api, type Producto, type Ubicacion } from '../api/inventario'
-import { useBarcodeScan } from '../hooks/useBarcodeScan'
+import { useState, useEffect, useMemo } from 'react'
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 
-type Paso = 'scan' | 'ubicar' | 'exito'
+interface RowInv { codigo: string; nombre: string; ubicacion: string; cantidad: number; color: string }
+type PivotRow = { codigo: string; nombre: string; locs: { ubicacion: string; cantidad: number; color: string }[]; total: number }
 
 export default function Ubicar() {
-  const [paso,            setPaso]            = useState<Paso>('scan')
-  const [producto,        setProducto]        = useState<Producto | null>(null)
-  const [ubicaciones,     setUbicaciones]     = useState<Ubicacion[]>([])
-  const [seleccionada,    setSeleccionada]    = useState<string | null>(null)
-  const [cargando,        setCargando]        = useState(false)
-  const [error,           setError]           = useState('')
-  const [inputManual,     setInputManual]     = useState('')
+  const [rows,    setRows]    = useState<RowInv[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error,   setError]   = useState('')
 
-  useEffect(() => {
-    api.getUbicaciones().then(setUbicaciones).catch(() => {})
-  }, [])
-
-  const buscarProducto = useCallback(async (codigo: string) => {
-    if (cargando) return
-    setCargando(true)
+  async function cargar() {
+    setLoading(true)
     setError('')
     try {
-      const prod = await api.getProducto(codigo.trim())
-      setProducto(prod)
-      setSeleccionada(prod.ubicacion ?? null)
-      setPaso('ubicar')
+      const res = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/almacen/inventario`)
+      if (!res.ok) throw new Error('Error del servidor')
+      const data = await res.json()
+      setRows(Array.isArray(data) ? data : [])
     } catch (e) {
       setError((e as Error).message)
     } finally {
-      setCargando(false)
-    }
-  }, [cargando])
-
-  useBarcodeScan(buscarProducto)
-
-  async function asignar(ubicacion: string) {
-    if (!producto || cargando) return
-    setCargando(true)
-    try {
-      await api.setUbicacion(producto.codigo, ubicacion)
-      setSeleccionada(ubicacion)
-      setPaso('exito')
-      setTimeout(reset, 1800)
-    } catch (e) {
-      setError((e as Error).message)
-    } finally {
-      setCargando(false)
+      setLoading(false)
     }
   }
 
-  function reset() {
-    setPaso('scan')
-    setProducto(null)
-    setInputManual('')
-    setError('')
-    setSeleccionada(null)
-  }
+  useEffect(() => { cargar() }, [])
 
-  const colorSeleccionada = ubicaciones.find(u => u.nombre === seleccionada)?.color ?? '#1D9E75'
+  const pivot = useMemo<PivotRow[]>(() => {
+    const map = new Map<string, PivotRow>()
+    for (const r of rows) {
+      if (!map.has(r.codigo)) map.set(r.codigo, { codigo: r.codigo, nombre: r.nombre, locs: [], total: 0 })
+      const p = map.get(r.codigo)!
+      p.locs.push({ ubicacion: r.ubicacion, cantidad: r.cantidad, color: r.color })
+      p.total += r.cantidad
+    }
+    return Array.from(map.values()).sort((a, b) => b.total - a.total)
+  }, [rows])
 
-  // ── Escanear ─────────────────────────────────────────────────────────────────
-  if (paso === 'scan') return (
-    <div style={{ padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <div style={{
-        background: 'white', borderRadius: 18,
-        border: '2px dashed rgba(59,130,246,0.35)',
-        padding: '32px 20px', textAlign: 'center',
-      }}>
-        <div style={{ fontSize: 48, marginBottom: 12 }}>📍</div>
-        <p style={{ fontSize: 15, color: '#5F5E5A', marginBottom: 4 }}>Escanea el producto a ubicar</p>
-        <p style={{ fontSize: 13, color: '#aaa' }}>Asigna en qué lugar está guardado</p>
+  const filtered = pivot
+  const totalPiezas = filtered.reduce((s, p) => s + p.total, 0)
+
+  return (
+    <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <button
+          onClick={cargar}
+          disabled={loading}
+          style={{
+            padding: '10px 16px', background: '#1D9E75', color: 'white',
+            borderRadius: 12, fontSize: 14, fontWeight: 600,
+            opacity: loading ? 0.6 : 1,
+          }}
+        >
+          {loading ? '⟳ Actualizando...' : '↻ Actualizar'}
+        </button>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <label style={{ fontSize: 13, color: '#5F5E5A' }}>O escribe el código manualmente</label>
+      {/* Resumen */}
+      {!loading && !error && rows.length > 0 && (
         <div style={{ display: 'flex', gap: 8 }}>
-          <input
-            data-manual="true"
-            value={inputManual}
-            onChange={e => setInputManual(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && inputManual.trim() && buscarProducto(inputManual)}
-            placeholder="Código de barras..."
-            style={{
-              flex: 1, padding: '14px', fontSize: 16,
-              border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 12,
-              background: 'white', color: '#1a1a18',
-            }}
-          />
-          <button
-            onClick={() => inputManual.trim() && buscarProducto(inputManual)}
-            style={{ padding: '14px 18px', background: '#3B82F6', color: 'white', borderRadius: 12, fontSize: 20, minWidth: 52 }}
-          >→</button>
-        </div>
-      </div>
-
-      {cargando && <p style={{ textAlign: 'center', color: '#3B82F6', fontSize: 14 }}>Buscando...</p>}
-      {error    && <p style={{ textAlign: 'center', color: '#712B13', fontSize: 14 }}>{error}</p>}
-    </div>
-  )
-
-  // ── Seleccionar ubicación ────────────────────────────────────────────────────
-  if (paso === 'ubicar' && producto) return (
-    <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div className="card">
-        <p style={{ fontSize: 17, fontWeight: 600, marginBottom: 4 }}>{producto.nombre}</p>
-        <p style={{ fontSize: 12, color: '#aaa', fontFamily: 'monospace', marginBottom: 10 }}>{producto.codigo}</p>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <span className={producto.stock === 0 ? 'badge badge-zero' : producto.stock < 5 ? 'badge badge-low' : 'badge badge-ok'}>
-            {producto.stock} pzas
-          </span>
-          {seleccionada && (
-            <span style={{
-              fontSize: 12, padding: '4px 10px', borderRadius: 20, fontWeight: 600,
-              background: `${colorSeleccionada}20`, color: colorSeleccionada,
-            }}>
-              📍 {seleccionada}
-            </span>
-          )}
-        </div>
-      </div>
-
-      <p style={{ fontSize: 14, fontWeight: 600, color: '#1a1a18' }}>¿Dónde está este producto?</p>
-
-      {ubicaciones.length === 0 ? (
-        <p style={{ textAlign: 'center', color: '#aaa', fontSize: 13 }}>
-          Sin ubicaciones configuradas. Usa el botón ⚙ para agregar.
-        </p>
-      ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-          {ubicaciones.map(u => (
-            <button
-              key={u.id}
-              onClick={() => asignar(u.nombre)}
-              disabled={cargando}
-              style={{
-                padding: '20px 12px', borderRadius: 14, cursor: 'pointer',
-                border: seleccionada === u.nombre ? `2.5px solid ${u.color}` : '1.5px solid rgba(0,0,0,0.10)',
-                background: seleccionada === u.nombre ? `${u.color}18` : 'white',
-                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
-              }}
-            >
-              <div style={{ width: 14, height: 14, borderRadius: '50%', background: u.color }} />
-              <span style={{
-                fontSize: 13, fontWeight: seleccionada === u.nombre ? 700 : 500,
-                color: seleccionada === u.nombre ? u.color : '#1a1a18',
-                textAlign: 'center', lineHeight: 1.3,
-              }}>
-                {u.nombre}
-              </span>
-            </button>
-          ))}
+          <div style={{ flex: 1, background: '#E1F5EE', borderRadius: 10, padding: '10px 14px' }}>
+            <p style={{ fontSize: 11, color: '#085041', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>Productos</p>
+            <p style={{ fontSize: 22, fontWeight: 700, color: '#085041' }}>{filtered.length}</p>
+          </div>
+          <div style={{ flex: 1, background: '#E1F5EE', borderRadius: 10, padding: '10px 14px' }}>
+            <p style={{ fontSize: 11, color: '#085041', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>Piezas totales</p>
+            <p style={{ fontSize: 22, fontWeight: 700, color: '#085041' }}>{totalPiezas.toLocaleString('es-MX')}</p>
+          </div>
         </div>
       )}
 
-      {error && <p style={{ textAlign: 'center', color: '#712B13', fontSize: 13 }}>{error}</p>}
-      <button className="btn-secondary" onClick={reset}>Cancelar</button>
+      {/* Estados */}
+      {loading && <p style={{ textAlign: 'center', color: '#1D9E75', fontSize: 14, padding: '20px 0' }}>Cargando inventario...</p>}
+      {error   && <p style={{ textAlign: 'center', color: '#712B13', fontSize: 13 }}>{error}</p>}
+      {!loading && !error && rows.length === 0 && (
+        <div style={{ textAlign: 'center', padding: '40px 20px' }}>
+          <p style={{ fontSize: 40, marginBottom: 10 }}>📦</p>
+          <p style={{ color: '#aaa', fontSize: 14 }}>Sin stock registrado en el sistema</p>
+          <p style={{ color: '#bbb', fontSize: 12, marginTop: 6 }}>Usa Recepción para registrar productos</p>
+        </div>
+      )}
+      {/* Lista */}
+      {!loading && !error && filtered.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {filtered.map(p => (
+            <div key={p.codigo} style={{
+              background: 'white', borderRadius: 12,
+              border: '1px solid rgba(0,0,0,0.06)',
+              padding: '12px 14px',
+              display: 'flex', alignItems: 'flex-start', gap: 10,
+            }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ fontSize: 13, fontWeight: 600, color: '#1a1a18', lineHeight: 1.3 }}>{p.nombre}</p>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
+                  {p.locs.map(u => (
+                    <span key={u.ubicacion} style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 4,
+                      padding: '3px 9px', borderRadius: 20,
+                      background: `${u.color}15`, border: `1px solid ${u.color}40`,
+                      fontSize: 11, fontWeight: 600, color: u.color,
+                    }}>
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: u.color }} />
+                      {u.cantidad} {u.ubicacion}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div style={{ textAlign: 'right', flexShrink: 0, paddingTop: 2 }}>
+                <p style={{ fontSize: 22, fontWeight: 700, color: '#1D9E75', lineHeight: 1 }}>{p.total}</p>
+                <p style={{ fontSize: 9, color: '#aaa' }}>total</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
-
-  // ── Éxito ────────────────────────────────────────────────────────────────────
-  if (paso === 'exito' && producto) return (
-    <div style={{
-      padding: '40px 24px', display: 'flex', flexDirection: 'column',
-      alignItems: 'center', textAlign: 'center', gap: 12,
-    }}>
-      <div style={{
-        width: 80, height: 80, borderRadius: '50%',
-        background: `${colorSeleccionada}20`,
-        display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 36, marginBottom: 8,
-      }}>📍</div>
-      <p style={{ fontSize: 20, fontWeight: 700, color: '#1a1a18' }}>Ubicación guardada</p>
-      <p style={{ fontSize: 15, color: '#5F5E5A' }}>{producto.nombre}</p>
-      <p style={{ fontSize: 16, fontWeight: 700, color: colorSeleccionada }}>{seleccionada}</p>
-      <p style={{ fontSize: 13, color: '#aaa' }}>Listo para escanear otro...</p>
-    </div>
-  )
-
-  return null
 }
