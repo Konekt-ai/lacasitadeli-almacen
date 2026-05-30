@@ -131,7 +131,8 @@ GO
 -- Paso 3: DEFAULT constraint para ubicacion
 IF NOT EXISTS (
     SELECT * FROM sys.default_constraints
-    WHERE parent_object_id = OBJECT_ID('inventario_bodega') AND name = 'DF_inv_ubicacion'
+    WHERE parent_object_id = OBJECT_ID('inventario_bodega')
+      AND COL_NAME(parent_object_id, parent_column_id) = 'ubicacion'
 )
     ALTER TABLE inventario_bodega ADD CONSTRAINT DF_inv_ubicacion DEFAULT 'Bodega' FOR ubicacion;
 GO
