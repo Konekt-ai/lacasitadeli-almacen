@@ -5,13 +5,15 @@ import Historial from './pages/Historial'
 import Buscar from './pages/Buscar'
 import Merma from './pages/Merma'
 import Ubicar from './pages/Ubicar'
+import Nuevos from './pages/Nuevos'
 import GestionUbicaciones from './pages/GestionUbicaciones'
 
-type Tab = 'recepcion' | 'salida' | 'merma' | 'historial' | 'buscar' | 'ubicar'
+type Tab = 'recepcion' | 'salida' | 'merma' | 'historial' | 'buscar' | 'ubicar' | 'nuevos'
 
 const TABS: { id: Tab; label: string; emoji: string }[] = [
   { id: 'recepcion', label: 'Recepción', emoji: '📦' },
   { id: 'salida',    label: 'Salida',    emoji: '📤' },
+  { id: 'nuevos',    label: 'Nuevos',    emoji: '🆕' },
   { id: 'merma',     label: 'Merma',     emoji: '🗑️' },
   { id: 'historial', label: 'Historial', emoji: '📋' },
   { id: 'buscar',    label: 'Buscar',    emoji: '🔍' },
@@ -25,6 +27,7 @@ const TAB_COLOR: Record<Tab, string> = {
   historial: '#1D9E75',
   buscar:    '#1D9E75',
   ubicar:    '#3B82F6',
+  nuevos:    '#1D9E75',
 }
 
 const TAB_LABEL: Record<Tab, string> = {
@@ -34,6 +37,7 @@ const TAB_LABEL: Record<Tab, string> = {
   historial: 'Historial del día',
   buscar:    'Buscar producto',
   ubicar:    'Inventario general',
+  nuevos:    'Productos nuevos',
 }
 
 export default function App() {
@@ -84,6 +88,7 @@ export default function App() {
         {tab === 'historial' && <Historial />}
         {tab === 'buscar'    && <Buscar />}
         {tab === 'ubicar'    && <Ubicar />}
+        {tab === 'nuevos'    && <Nuevos />}
       </div>
 
       {/* Nav inferior */}

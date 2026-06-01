@@ -74,6 +74,22 @@ export interface ItemRecepcionInput {
   caducidad?: string | null
 }
 
+// ── Productos nuevos pendientes (staging — aún sin código en NovaCaja) ──
+export interface ProductoPendiente {
+  id: number
+  proveedor: string | null
+  sku_proveedor: string | null
+  descripcion_proveedor: string
+  unidad: string | null
+  piezas_por_caja: number
+  cajas: number
+  precio_unitario: number | null
+  estado: string
+  codigo_barras: string | null
+  origen: string
+  created_at: string
+}
+
 const API_URL = import.meta.env.VITE_API_URL || ''
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -166,4 +182,26 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(item),
     }),
+
+  // ── Productos nuevos pendientes ──
+  getPendientes: (q = '') =>
+    request<ProductoPendiente[]>(`/api/almacen/productos-pendientes/buscar?q=${encodeURIComponent(q)}`),
+
+  // Registra un producto nuevo que aún no existe en el catálogo (queda pendiente).
+  crearPendiente: (p: {
+    descripcion_proveedor: string; proveedor?: string | null; sku_proveedor?: string | null
+    unidad?: string | null; piezas_por_caja?: number; cajas?: number
+  }) =>
+    request<{ ok: boolean; id: number; yaExistia?: boolean }>('/api/almacen/productos-pendientes', {
+      method: 'POST',
+      body: JSON.stringify({ ...p, origen: 'tc52' }),
+    }),
+
+  // Asigna el código de barras real a un pendiente al llegar a bodega.
+  resolverPendiente: (id: number, codigo_barras: string, piezas_por_caja?: number) =>
+    request<{ ok: boolean; codigo_barras: string; equivalencia: boolean }>(
+      `/api/almacen/productos-pendientes/${id}/resolver`, {
+        method: 'POST',
+        body: JSON.stringify({ codigo_barras, piezas_por_caja }),
+      }),
 }
