@@ -50,6 +50,30 @@ export interface PedidoResumen {
   total_recibido: number
 }
 
+// ── Recepción con conversión caja→pieza (/api/recepcion/*) ──
+export interface AbrirRecepcionResponse {
+  ok: boolean
+  id: number      // id de la recepción real (recepcionRealId)
+  nueva: boolean
+}
+
+export interface ItemRecepcionResponse {
+  ok: boolean
+  id: number
+  piezas_resultantes: number
+  nombre: string
+  piezas_por_caja: number
+}
+
+export interface ItemRecepcionInput {
+  codigo_barras: string
+  cajas_recibidas: number
+  ubicacion: string
+  piezas_por_caja?: number
+  lote?: string | null
+  caducidad?: string | null
+}
+
 const API_URL = import.meta.env.VITE_API_URL || ''
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -128,4 +152,18 @@ export const api = {
 
   getPedidosAbiertos: () =>
     request<PedidoResumen[]>('/api/almacen/pedidos?estado=activos'),
+
+  // Abre (o continúa) una recepción real ligada a un pedido. id=null = sin orden.
+  abrirRecepcionReal: (recepcionEsperadaId: number | null, recibidoPor = 'TC52') =>
+    request<AbrirRecepcionResponse>('/api/recepcion/reales/abrir', {
+      method: 'POST',
+      body: JSON.stringify({ recepcion_esperada_id: recepcionEsperadaId, recibido_por: recibidoPor }),
+    }),
+
+  // Agrega un renglón (caja) a la recepción real abierta. Convierte caja→pieza.
+  agregarItemRecepcion: (recepcionRealId: number, item: ItemRecepcionInput) =>
+    request<ItemRecepcionResponse>(`/api/recepcion/reales/${recepcionRealId}/items`, {
+      method: 'POST',
+      body: JSON.stringify(item),
+    }),
 }

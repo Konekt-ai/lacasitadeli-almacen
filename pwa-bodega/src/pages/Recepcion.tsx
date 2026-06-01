@@ -9,16 +9,22 @@ export default function Recepcion() {
   const [paso,        setPaso]        = useState<Paso>('pedido')
   const [producto,    setProducto]    = useState<Producto | null>(null)
   const [cantidad,    setCantidad]    = useState(1)
-  const [nuevoStock,  setNuevoStock]  = useState(0)
   const [error,       setError]       = useState('')
   const [cargando,    setCargando]    = useState(false)
   const [inputManual, setInputManual] = useState('')
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
   const [ubicSelec,   setUbicSelec]   = useState<string>('Sin ubicar')
   const [pedidos,     setPedidos]     = useState<PedidoResumen[]>([])
-  const [pedidoId,    setPedidoId]    = useState<number | null>(null)
   const [pedidoFolio, setPedidoFolio] = useState<string | null>(null)
   const [cargandoPedidos, setCargandoPedidos] = useState(false)
+  // Recepción real activa + captura de lote/caducidad
+  const [recepcionRealId, setRecepcionRealId] = useState<number | null>(null)
+  const [caducidad,   setCaducidad]   = useState('')
+  const [lote,        setLote]        = useState('')
+  // Resultado del último renglón registrado (para pantalla de éxito)
+  const [piezasResult, setPiezasResult] = useState(0)
+  const [piezasPorCaja, setPiezasPorCaja] = useState(1)
+  const [cajasResult, setCajasResult] = useState(0)
   const scanTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
   const registrandoRef = useRef(false)
 
@@ -38,10 +44,22 @@ export default function Recepcion() {
       .finally(() => setCargandoPedidos(false))
   }, [paso])
 
-  function seleccionarPedido(id: number | null, folio: string | null) {
-    setPedidoId(id)
-    setPedidoFolio(folio)
-    setPaso('scan')
+  async function seleccionarPedido(id: number | null, folio: string | null) {
+    if (cargando) return
+    setError('')
+    setCargando(true)
+    try {
+      const res = await api.abrirRecepcionReal(id, 'TC52')
+      setRecepcionRealId(res.id)
+      setPedidoFolio(folio)
+      setPaso('scan')
+    } catch (e) {
+      setError((e as Error).message)
+      setPaso('error')
+      beepError()
+    } finally {
+      setCargando(false)
+    }
   }
 
   function handleScanInput(val: string) {
@@ -73,11 +91,26 @@ export default function Recepcion() {
 
   async function confirmar() {
     if (!producto || registrandoRef.current) return
+    if (recepcionRealId == null) {
+      setError('No hay una recepción activa. Vuelve a elegir la orden.')
+      setPaso('error')
+      beepError()
+      return
+    }
     registrandoRef.current = true
     setCargando(true)
     try {
-      const res = await api.registrarEntrada(producto.codigo, cantidad, producto.nombre, pedidoId, ubicSelec)
-      setNuevoStock(res.stockActual)
+      const res = await api.agregarItemRecepcion(recepcionRealId, {
+        codigo_barras: producto.codigo,
+        cajas_recibidas: cantidad,
+        ubicacion: ubicSelec,
+        // piezas_por_caja se resuelve en el backend desde la orden esperada (conversión caja→pieza)
+        lote: lote.trim() || undefined,
+        caducidad: caducidad || undefined,
+      })
+      setPiezasResult(res.piezas_resultantes)
+      setPiezasPorCaja(res.piezas_por_caja)
+      setCajasResult(cantidad)
       setPaso('exito')
       beepOk()
     } catch (e) {
@@ -91,22 +124,27 @@ export default function Recepcion() {
   }
 
   function reset() {
-    setPaso('scan')
+    // Continúa en la misma recepción real; si no hay, regresa a elegir orden.
+    setPaso(recepcionRealId == null ? 'pedido' : 'scan')
     setProducto(null)
     setCantidad(1)
     setInputManual('')
     setError('')
+    setCaducidad('')
+    setLote('')
     if (ubicaciones.length > 0) setUbicSelec(ubicaciones[0].nombre)
   }
 
   function resetTotal() {
-    setPedidoId(null)
+    setRecepcionRealId(null)
     setPedidoFolio(null)
     setPaso('pedido')
     setProducto(null)
     setCantidad(1)
     setInputManual('')
     setError('')
+    setCaducidad('')
+    setLote('')
   }
 
   function stockClass(s: number) {
@@ -268,7 +306,7 @@ export default function Recepcion() {
 
       {/* Cantidad */}
       <div>
-        <p style={{ fontSize: 14, color: '#5F5E5A', marginBottom: 10 }}>¿Cuántas piezas llegaron?</p>
+        <p style={{ fontSize: 14, color: '#5F5E5A', marginBottom: 10 }}>¿Cuántas cajas llegaron?</p>
         <div style={{ display: 'flex', gap: 12, alignItems: 'stretch' }}>
           <button
             onClick={() => setCantidad(c => Math.max(1, c - 1))}
@@ -292,7 +330,7 @@ export default function Recepcion() {
           >+</button>
         </div>
         <p style={{ fontSize: 13, color: '#1D9E75', textAlign: 'center', marginTop: 8 }}>
-          Nuevo stock: {producto.stock + cantidad} pzas
+          {cantidad} {cantidad === 1 ? 'caja' : 'cajas'} · se convierte a piezas al confirmar
         </p>
       </div>
 
@@ -326,6 +364,38 @@ export default function Recepcion() {
         </div>
       )}
 
+      {/* Caducidad y lote (opcionales) */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <label style={{ fontSize: 14, color: '#5F5E5A' }}>Fecha de caducidad (opcional)</label>
+        <input
+          data-manual="true"
+          type="date"
+          value={caducidad}
+          onChange={e => setCaducidad(e.target.value)}
+          style={{
+            padding: '14px', fontSize: 16,
+            border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 12,
+            background: 'white', color: '#1a1a18',
+          }}
+        />
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <label style={{ fontSize: 14, color: '#5F5E5A' }}>Lote / Partida (opcional)</label>
+        <input
+          data-manual="true"
+          type="text"
+          value={lote}
+          onChange={e => setLote(e.target.value)}
+          placeholder="Ej. L-2026-014"
+          style={{
+            padding: '14px', fontSize: 16,
+            border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 12,
+            background: 'white', color: '#1a1a18',
+          }}
+        />
+      </div>
+
       <button className="btn-primary" onClick={confirmar} disabled={cargando}>
         {cargando ? 'Guardando...' : '✓ Confirmar entrada'}
       </button>
@@ -345,8 +415,19 @@ export default function Recepcion() {
         justifyContent: 'center', fontSize: 36, marginBottom: 8,
       }}>✓</div>
       <p style={{ fontSize: 20, fontWeight: 700, color: '#085041' }}>Entrada registrada</p>
-      <p style={{ fontSize: 15, color: '#5F5E5A' }}>+{cantidad} pzas · {producto.nombre}</p>
-      <p style={{ fontSize: 14, color: '#1D9E75', fontWeight: 600 }}>Stock nuevo: {nuevoStock} pzas</p>
+      <p style={{ fontSize: 15, color: '#5F5E5A' }}>{producto.nombre}</p>
+      <p style={{ fontSize: 17, fontWeight: 700, color: '#085041' }}>
+        {piezasResult} piezas registradas
+      </p>
+      {piezasPorCaja > 1 && (
+        <p style={{ fontSize: 13, color: '#5F5E5A', marginTop: -4 }}>
+          {cajasResult} {cajasResult === 1 ? 'caja' : 'cajas'} × {piezasPorCaja} piezas
+        </p>
+      )}
+      <p style={{ fontSize: 14, color: '#1D9E75', fontWeight: 600 }}>Stock actual: {producto.stock} pzas</p>
+      <p style={{ fontSize: 12, color: '#aaa', maxWidth: 260 }}>
+        Se sumará al stock cuando se confirme la recepción
+      </p>
       <span style={{
         fontSize: 13, padding: '5px 14px', borderRadius: 20, fontWeight: 600,
         background: `${colorUbic}20`, color: colorUbic,
