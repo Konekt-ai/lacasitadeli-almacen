@@ -50,6 +50,21 @@ export interface PedidoResumen {
   total_recibido: number
 }
 
+// Orden de compra esperada (MSSQL recepciones_esperadas) — lo que viene en el trailer
+export interface RecepcionEsperada {
+  id: number
+  referencia: string | null
+  proveedor: string | null
+  fecha_esperada: string | null
+  destino_esperado: string | null
+  estatus: 'Pendiente' | 'Parcial' | 'Recibida' | 'Cancelada'
+  notas: string | null
+  creado: string
+  num_items: number
+  total_cajas_esperadas: number
+  total_piezas_esperadas: number
+}
+
 // ── Recepción con conversión caja→pieza (/api/recepcion/*) ──
 export interface AbrirRecepcionResponse {
   ok: boolean
@@ -168,6 +183,10 @@ export const api = {
 
   getPedidosAbiertos: () =>
     request<PedidoResumen[]>('/api/almacen/pedidos?estado=activos'),
+
+  // Órdenes esperadas (MSSQL) — fuente real para recibir por cajas en el TC52
+  getRecepcionesEsperadas: () =>
+    request<RecepcionEsperada[]>('/api/recepcion/esperadas?estado=activos'),
 
   // Abre (o continúa) una recepción real ligada a un pedido. id=null = sin orden.
   abrirRecepcionReal: (recepcionEsperadaId: number | null, recibidoPor = 'TC52') =>

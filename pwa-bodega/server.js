@@ -185,7 +185,8 @@ async function getNombre(db, codigo) {
   const r = await db.request()
     .input('codigo', sql.NVarChar(50), codigo)
     .query(`SELECT TOP 1 Art_Descripcion AS nombre FROM ${VISTA}
-            WHERE Art_GTIN=@codigo OR CodAlt_Codigo=@codigo ORDER BY Art_Codigo`)
+            WHERE Art_GTIN=@codigo OR CodAlt_Codigo=@codigo OR Art_Codigo=@codigo OR Art_PLU=@codigo
+            ORDER BY Art_Codigo`)
   return r.recordset[0]?.nombre ?? null
 }
 
@@ -746,6 +747,32 @@ app.get('/api/almacen/inventario', async (_req, res) => {
     res.status(500).json({ mensaje: err.message })
   }
 })
+
+// ── Proxy a la API admin (recepción por cajas + productos pendientes) ─────────
+// Estas rutas viven solo en lacasitadeli-admin/apps/api (puerto 3002). El TC52
+// las consume a través de aquí, así no hay otra URL ni CORS que configurar.
+// Si la API admin no responde -> 502.
+const ADMIN_API = process.env.ADMIN_API_URL || 'http://localhost:3002'
+async function proxyAdmin(req, res) {
+  try {
+    const opts = { method: req.method, headers: {} }
+    if (!['GET', 'HEAD'].includes(req.method)) {
+      opts.headers['Content-Type'] = 'application/json'
+      opts.body = JSON.stringify(req.body ?? {})
+    }
+    const r = await fetch(ADMIN_API + req.originalUrl, opts)
+    const text = await r.text()
+    res.status(r.status)
+       .set('Content-Type', r.headers.get('content-type') || 'application/json')
+       .send(text)
+  } catch (e) {
+    res.status(502).json({ mensaje: 'API admin no disponible: ' + e.message })
+  }
+}
+app.use('/api/recepcion', proxyAdmin)
+app.all('/api/almacen/productos-pendientes', proxyAdmin)
+app.all('/api/almacen/productos-pendientes/*', proxyAdmin)
+app.all('/api/almacen/buscar-coincidencias', proxyAdmin)
 
 // ── Stubs ─────────────────────────────────────────────────────────────────────
 app.post('/api/almacen/producto-ubicacion', (_req, res) => res.json({ ok: true }))

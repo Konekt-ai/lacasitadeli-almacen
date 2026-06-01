@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { api, type Producto, type Ubicacion, type PedidoResumen } from '../api/inventario'
+import { api, type Producto, type Ubicacion, type RecepcionEsperada } from '../api/inventario'
 import { useBarcodeScan } from '../hooks/useBarcodeScan'
 import { beepScan, beepOk, beepError } from '../utils/beep'
 
@@ -14,7 +14,7 @@ export default function Recepcion() {
   const [inputManual, setInputManual] = useState('')
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
   const [ubicSelec,   setUbicSelec]   = useState<string>('Sin ubicar')
-  const [pedidos,     setPedidos]     = useState<PedidoResumen[]>([])
+  const [pedidos,     setPedidos]     = useState<RecepcionEsperada[]>([])
   const [pedidoFolio, setPedidoFolio] = useState<string | null>(null)
   const [cargandoPedidos, setCargandoPedidos] = useState(false)
   // Recepción real activa + captura de lote/caducidad
@@ -38,7 +38,7 @@ export default function Recepcion() {
   useEffect(() => {
     if (paso !== 'pedido') return
     setCargandoPedidos(true)
-    api.getPedidosAbiertos()
+    api.getRecepcionesEsperadas()
       .then(setPedidos)
       .catch(() => setPedidos([]))
       .finally(() => setCargandoPedidos(false))
@@ -183,14 +183,12 @@ export default function Recepcion() {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {pedidos.map(p => {
-            const pct = p.total_esperado > 0
-              ? Math.min(100, Math.round((p.total_recibido / p.total_esperado) * 100))
-              : 0
-            const esEnRecepcion = p.estado === 'en_recepcion'
+            const esEnRecepcion = p.estatus === 'Parcial'
+            const titulo = p.referencia || `Orden #${p.id}`
             return (
               <button
                 key={p.id}
-                onClick={() => seleccionarPedido(p.id, p.folio)}
+                onClick={() => seleccionarPedido(p.id, titulo)}
                 style={{
                   background: 'white', borderRadius: 14, padding: '14px 16px',
                   border: esEnRecepcion ? '2px solid #1D9E75' : '1.5px solid rgba(0,0,0,0.10)',
@@ -199,7 +197,7 @@ export default function Recepcion() {
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ fontSize: 15, fontWeight: 700, color: '#1a1a18' }}>{p.folio}</p>
+                    <p style={{ fontSize: 15, fontWeight: 700, color: '#1a1a18' }}>{titulo}</p>
                     <p style={{ fontSize: 12, color: '#aaa', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {p.proveedor || 'Sin proveedor'} · {p.num_items} productos
                     </p>
@@ -209,15 +207,10 @@ export default function Recepcion() {
                       {esEnRecepcion ? '🟢 En recepción' : '🟡 Pendiente'}
                     </p>
                     <p style={{ fontSize: 11, color: '#aaa', marginTop: 2 }}>
-                      {p.total_recibido}/{p.total_esperado} uds · {pct}%
+                      {p.total_cajas_esperadas} cajas esperadas
                     </p>
                   </div>
                 </div>
-                {esEnRecepcion && (
-                  <div style={{ marginTop: 10, height: 4, background: '#E5F7F0', borderRadius: 4, overflow: 'hidden' }}>
-                    <div style={{ height: '100%', background: '#1D9E75', width: `${pct}%`, borderRadius: 4 }} />
-                  </div>
-                )}
               </button>
             )
           })}
