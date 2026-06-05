@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
-import { api, type ProductoPendiente } from '../api/inventario'
+import { api, type ProductoPendiente, type Ubicacion } from '../api/inventario'
 import { useBarcodeScan } from '../hooks/useBarcodeScan'
 import { beepScan, beepOk, beepError } from '../utils/beep'
+import ContadorCantidad from '../components/ContadorCantidad'
 
 const VERDE = '#1D9E75'
 
@@ -17,11 +18,16 @@ export default function Nuevos() {
   const [ppc,         setPpc]         = useState('1')
   const [guardando,   setGuardando]   = useState(false)
 
-  // Alta de producto nuevo
-  const [modoCrear, setModoCrear] = useState(false)
-  const [fDesc, setFDesc] = useState('')
-  const [fProv, setFProv] = useState('')
-  const [fPpc,  setFPpc]  = useState('1')
+  // Alta de producto nuevo (en un paso: con código, cantidad y ubicación)
+  const [modoCrear,   setModoCrear]   = useState(false)
+  const [fDesc,       setFDesc]       = useState('')
+  const [fProv,       setFProv]       = useState('')
+  const [fPpc,        setFPpc]        = useState('1')
+  const [fCodigo,     setFCodigo]     = useState('')
+  const [fCantidad,   setFCantidad]   = useState(0)
+  const [fUbic,       setFUbic]       = useState('Bodega')
+  const [avisoExiste, setAvisoExiste] = useState('')
+  const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
 
   const notify = (m: string) => { setToast(m); setTimeout(() => setToast(''), 3000) }
 
@@ -34,11 +40,29 @@ export default function Nuevos() {
 
   useEffect(() => { cargar() }, [cargar])
 
-  // Escaneo: si hay un pendiente en resolución, el código escaneado lo llena.
+  useEffect(() => {
+    api.getUbicaciones().then(u => {
+      setUbicaciones(u)
+      if (u.length > 0) setFUbic(u[0].nombre)
+    }).catch(() => {})
+  }, [])
+
+  // Escaneo: llena el código del pendiente en resolución, o del producto nuevo.
   const onScan = useCallback((cod: string) => {
     if (resolviendo) { setCodigo(cod); beepScan() }
-  }, [resolviendo])
+    else if (modoCrear) { setFCodigo(cod); beepScan() }
+  }, [resolviendo, modoCrear])
   useBarcodeScan(onScan)
+
+  // Aviso si el código ya existe en NovaCaja (mejor usar Entrada en ese caso).
+  async function verificarCodigo(cod: string) {
+    const c = cod.trim()
+    if (c.length < 4) { setAvisoExiste(''); return }
+    try {
+      const prod = await api.getProducto(c)
+      setAvisoExiste(prod ? `Ya existe: "${prod.nombre}". Mejor usa Entrada.` : '')
+    } catch { setAvisoExiste('') }
+  }
 
   function abrirResolver(p: ProductoPendiente) {
     setResolviendo(p)
@@ -61,19 +85,31 @@ export default function Nuevos() {
     finally { setGuardando(false) }
   }
 
+  function cerrarCrear() {
+    setModoCrear(false)
+    setFDesc(''); setFProv(''); setFPpc('1'); setFCodigo(''); setFCantidad(0); setAvisoExiste('')
+    if (ubicaciones.length > 0) setFUbic(ubicaciones[0].nombre)
+  }
+
   async function crear() {
     const desc = fDesc.trim()
+    const cod  = fCodigo.trim()
     if (desc.length < 3) { notify('Escribe la descripción'); beepError(); return }
+    if (cod.length < 4)  { notify('Escanea o escribe el código de barras'); beepError(); return }
+    if (fCantidad < 1)   { notify('Indica la cantidad'); beepError(); return }
     setGuardando(true)
     try {
-      const r = await api.crearPendiente({
-        descripcion_proveedor: desc,
-        proveedor: fProv.trim() || null,
+      await api.crearProductoNuevo({
+        codigo_barras: cod,
+        descripcion: desc,
+        cantidad: fCantidad,
+        ubicacion: fUbic,
         piezas_por_caja: parseInt(fPpc) || 1,
+        proveedor: fProv.trim() || null,
       })
       beepOk()
-      notify(r.yaExistia ? 'Ya estaba registrado' : 'Producto nuevo registrado')
-      setModoCrear(false); setFDesc(''); setFProv(''); setFPpc('1')
+      notify(`Registrado · +${fCantidad} pzas en ${fUbic}`)
+      cerrarCrear()
       cargar()
     } catch (e) { notify((e as Error).message); beepError() }
     finally { setGuardando(false) }
@@ -96,16 +132,29 @@ export default function Nuevos() {
         }}>{toast}</div>
       )}
 
-      {/* Alta de producto nuevo */}
+      {/* Alta de producto nuevo — en un paso: descripción + código + cantidad + ubicación */}
       {modoCrear ? (
-        <div style={{ background: 'white', borderRadius: 14, padding: 16, border: '1px solid rgba(0,0,0,0.06)' }}>
-          <p style={{ fontSize: 15, fontWeight: 700, color: '#1a1a18', marginBottom: 12 }}>Registrar producto nuevo</p>
-          <div style={{ marginBottom: 12 }}>
+        <div style={{ background: 'white', borderRadius: 14, padding: 16, border: '1px solid rgba(0,0,0,0.06)', display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <p style={{ fontSize: 15, fontWeight: 700, color: '#1a1a18' }}>Registrar producto nuevo</p>
+
+          <div>
             <label style={labelStyle}>Descripción del producto *</label>
             <input data-manual="true" value={fDesc} onChange={e => setFDesc(e.target.value)}
               placeholder="Ej. Galletas de chocolate 12oz" style={inputStyle} />
           </div>
-          <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+
+          <div>
+            <label style={labelStyle}>Código de barras * (escanea o escribe)</label>
+            <input data-manual="true" value={fCodigo}
+              onChange={e => { setFCodigo(e.target.value); verificarCodigo(e.target.value) }}
+              placeholder="Apunta el lector o escribe el código"
+              style={{ ...inputStyle, fontFamily: 'monospace' }} />
+            {avisoExiste && (
+              <p style={{ fontSize: 12, color: '#C05621', fontWeight: 600, marginTop: 6 }}>⚠️ {avisoExiste}</p>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', gap: 10 }}>
             <div style={{ flex: 1 }}>
               <label style={labelStyle}>Proveedor (opcional)</label>
               <input data-manual="true" value={fProv} onChange={e => setFProv(e.target.value)}
@@ -117,14 +166,42 @@ export default function Nuevos() {
                 style={{ ...inputStyle, textAlign: 'center' }} />
             </div>
           </div>
+
+          <div>
+            <label style={labelStyle}>Cantidad *</label>
+            <ContadorCantidad unidad="piezas" color={VERDE}
+              piezasPorCajaInicial={parseInt(fPpc) || 1}
+              onChange={t => setFCantidad(t)} />
+          </div>
+
+          {ubicaciones.length > 0 && (
+            <div>
+              <label style={labelStyle}>¿Dónde va?</label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                {ubicaciones.map(u => (
+                  <button key={u.id} onClick={() => setFUbic(u.nombre)}
+                    style={{
+                      padding: '12px 10px', borderRadius: 12, cursor: 'pointer',
+                      border: fUbic === u.nombre ? `2px solid ${u.color}` : '1.5px solid rgba(0,0,0,0.08)',
+                      background: fUbic === u.nombre ? `${u.color}18` : 'white',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                    }}>
+                    <span style={{ width: 9, height: 9, borderRadius: '50%', background: u.color }} />
+                    <span style={{ fontSize: 12, fontWeight: fUbic === u.nombre ? 700 : 500, color: fUbic === u.nombre ? u.color : '#5F5E5A' }}>{u.nombre}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div style={{ display: 'flex', gap: 10 }}>
-            <button onClick={() => setModoCrear(false)}
+            <button onClick={cerrarCrear}
               style={{ flex: 1, padding: 14, borderRadius: 12, background: '#eee', color: '#666', fontSize: 15, fontWeight: 600 }}>
               Cancelar
             </button>
-            <button onClick={crear} disabled={guardando}
-              style={{ flex: 2, padding: 14, borderRadius: 12, background: VERDE, color: 'white', fontSize: 15, fontWeight: 700, opacity: guardando ? 0.5 : 1 }}>
-              {guardando ? 'Guardando...' : 'Registrar'}
+            <button onClick={crear} disabled={guardando || fCantidad < 1}
+              style={{ flex: 2, padding: 14, borderRadius: 12, background: VERDE, color: 'white', fontSize: 15, fontWeight: 700, opacity: guardando || fCantidad < 1 ? 0.5 : 1 }}>
+              {guardando ? 'Guardando...' : `Registrar${fCantidad > 0 ? ` · ${fCantidad} pzas` : ''}`}
             </button>
           </div>
         </div>
@@ -136,7 +213,7 @@ export default function Nuevos() {
       )}
 
       <p style={{ fontSize: 12, color: '#aaa', marginTop: 4 }}>
-        Productos nuevos pendientes de código. Escanea el código del producto para asignárselo.
+        Al registrar, el stock se suma al instante y ya aparece en Inventario. El precio se lo pone el admin después.
       </p>
 
       {cargando && <p style={{ textAlign: 'center', color: VERDE, fontSize: 14 }}>Cargando...</p>}

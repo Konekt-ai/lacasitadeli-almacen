@@ -91,6 +91,12 @@ async function autoMigrate(db) {
     IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('movimientos_bodega') AND name='ubicacion')
       ALTER TABLE movimientos_bodega ADD ubicacion VARCHAR(50) NULL`)
 
+  // 4b. Agregar columna nombre a inventario_bodega (para productos nuevos que
+  //     aún no existen en NovaCaja — la bodega los maneja por su cuenta)
+  await run(`
+    IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id=OBJECT_ID('inventario_bodega') AND name='nombre')
+      ALTER TABLE inventario_bodega ADD nombre VARCHAR(200) NULL`)
+
   // 5. Crear ubicaciones_bodega si no existe e insertar ubicaciones
   await run(`
     IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='ubicaciones_bodega' AND xtype='U')
@@ -187,7 +193,19 @@ async function getNombre(db, codigo) {
     .query(`SELECT TOP 1 Art_Descripcion AS nombre FROM ${VISTA}
             WHERE Art_GTIN=@codigo OR CodAlt_Codigo=@codigo OR Art_Codigo=@codigo OR Art_PLU=@codigo
             ORDER BY Art_Codigo`)
-  return r.recordset[0]?.nombre ?? null
+  if (r.recordset[0]?.nombre) return r.recordset[0].nombre
+
+  // Fallback: productos nuevos que aún no están en NovaCaja pero la bodega ya
+  // registró con su nombre propio en inventario_bodega.
+  try {
+    const r2 = await db.request()
+      .input('codigo', sql.VarChar(50), codigo)
+      .query(`SELECT TOP 1 nombre FROM ${INV}
+              WHERE codigo_barras=@codigo AND nombre IS NOT NULL AND nombre<>''`)
+    if (r2.recordset[0]?.nombre) return r2.recordset[0].nombre
+  } catch {}
+
+  return null
 }
 
 async function getStock(db, codigo) {
@@ -349,6 +367,94 @@ app.post('/api/almacen/entrada', async (req, res) => {
     res.status(500).json({ mensaje: err.message })
   }
 })
+
+// ── POST /api/almacen/producto-nuevo ───────────────────────────────────────────
+// Registra un producto que AÚN NO existe en NovaCaja: guarda su nombre propio en
+// inventario_bodega y suma stock al instante (aparece en Inventario e Historial).
+// El alta en NovaCaja y el precio los pone el admin después; esto no los espera.
+app.post('/api/almacen/producto-nuevo', async (req, res) => {
+  const { codigo_barras, descripcion, cantidad, ubicacion = 'Bodega',
+          piezas_por_caja = 1, proveedor = null } = req.body
+  const codigo = String(codigo_barras || '').trim()
+  const nombre = String(descripcion || '').trim()
+  const ubic   = ubicacion || 'Bodega'
+  const qty    = parseInt(cantidad, 10)
+  if (!codigo || nombre.length < 2 || !qty || qty <= 0)
+    return res.status(400).json({ mensaje: 'Datos inválidos: falta código, descripción o cantidad' })
+  try {
+    const db = await getPool()
+
+    if (!adquirirLock(codigo, `nuevo:${ubic}`))
+      return res.json({ ok: true, stockActual: await getStock(db, codigo), mensaje: 'Producto registrado' })
+
+    const stockAntes   = await getStock(db, codigo)
+    const stockDespues = stockAntes + qty
+
+    const t = db.transaction()
+    await t.begin()
+    try {
+      await t.request()
+        .input('codigo',    sql.VarChar(50),  codigo)
+        .input('cantidad',  sql.Int,          qty)
+        .input('ubicacion', sql.VarChar(50),  ubic)
+        .input('nombre',    sql.VarChar(200), nombre)
+        .query(`
+          MERGE ${INV} AS target
+          USING (SELECT @codigo AS codigo_barras, @ubicacion AS ubicacion) AS src
+            ON target.codigo_barras=src.codigo_barras AND target.ubicacion=src.ubicacion
+          WHEN MATCHED THEN
+            UPDATE SET cantidad=target.cantidad+@cantidad, ultima_entrada=GETDATE(),
+                       nombre=ISNULL(NULLIF(target.nombre,''),@nombre)
+          WHEN NOT MATCHED THEN
+            INSERT (codigo_barras,ubicacion,cantidad,nombre,ultima_entrada)
+            VALUES (@codigo,@ubicacion,@cantidad,@nombre,GETDATE());`)
+      await t.request()
+        .input('codigo',       sql.VarChar(50), codigo)
+        .input('cantidad',     sql.Int,         qty)
+        .input('ubicacion',    sql.VarChar(50), ubic)
+        .input('stockAntes',   sql.Int,         stockAntes)
+        .input('stockDespues', sql.Int,         stockDespues)
+        .query(`INSERT INTO ${MOV}(codigo_barras,tipo,cantidad,ubicacion,stock_antes,stock_despues,fecha)
+                VALUES(@codigo,'entrada',@cantidad,@ubicacion,@stockAntes,@stockDespues,GETDATE())`)
+      await t.commit()
+    } catch (err) { await t.rollback(); throw err }
+
+    // Best-effort: avisar al admin para que lo vea y le ponga precio. No bloquea.
+    registrarPendienteAdmin({ codigo, nombre, qty, piezas_por_caja, proveedor }).catch(() => {})
+
+    res.json({ ok: true, stockActual: stockDespues, mensaje: 'Producto nuevo registrado' })
+  } catch (err) {
+    console.error('producto-nuevo:', err.message)
+    res.status(500).json({ mensaje: err.message })
+  }
+})
+
+// Crea + resuelve el pendiente en el admin (SQLite) para que aparezca en el panel
+// y se le pueda poner precio. Si el admin no responde, no afecta el stock.
+async function registrarPendienteAdmin({ codigo, nombre, qty, piezas_por_caja, proveedor }) {
+  const post = async (path, body) => {
+    const r = await fetch(ADMIN_API + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return r.ok ? r.json() : null
+  }
+  const creado = await post('/api/almacen/productos-pendientes', {
+    descripcion_proveedor: nombre,
+    proveedor: proveedor || null,
+    piezas_por_caja: parseInt(piezas_por_caja) || 1,
+    cajas: qty,
+    origen: 'tc52',
+  })
+  const id = creado?.id
+  if (id) {
+    await post(`/api/almacen/productos-pendientes/${id}/resolver`, {
+      codigo_barras: codigo,
+      piezas_por_caja: parseInt(piezas_por_caja) || 1,
+    })
+  }
+}
 
 // ── POST /api/almacen/salida ───────────────────────────────────────────────────
 app.post('/api/almacen/salida', async (req, res) => {
@@ -534,11 +640,10 @@ app.get('/api/almacen/buscar', async (req, res) => {
         ORDER BY v.Art_Descripcion`)
 
     const products = result.recordset
-    if (products.length === 0) return res.json([])
 
     // 2. Desglose por ubicación — busca por ambos códigos
     const locMap = {}
-    try {
+    if (products.length > 0) try {
       const allCodes = new Set()
       for (const p of products) {
         if (p.codigo)     allCodes.add(`'${p.codigo.replace(/'/g, "''")}'`)
@@ -561,12 +666,40 @@ app.get('/api/almacen/buscar', async (req, res) => {
       }
     } catch {}
 
-    res.json(products.map(p => ({
+    const fromVista = products.map(p => ({
       codigo:            p.codigo,
       nombre:            p.nombre,
       stock:             p.stock,
       stockPorUbicacion: locMap[p.codigo] ?? [],
-    })))
+    }))
+
+    // 3. Productos NUEVOS: registrados en la bodega con nombre propio y que aún
+    //    NO existen en NovaCaja. Se incluyen para que sean buscables/visibles.
+    let nuevos = []
+    try {
+      const nuevosRes = await db.request()
+        .input('q', sql.NVarChar(100), `%${q}%`)
+        .query(`
+          SELECT i.codigo_barras, i.nombre, ISNULL(i.ubicacion,'Bodega') AS ubicacion,
+                 i.cantidad, ISNULL(u.color,'#6B7280') AS color
+          FROM ${INV} i
+          LEFT JOIN ${UBIC} u ON u.nombre=ISNULL(i.ubicacion,'Bodega') AND u.activa=1
+          WHERE i.cantidad>0 AND i.nombre IS NOT NULL AND i.nombre<>''
+            AND (i.nombre LIKE @q OR i.codigo_barras LIKE @q)
+            AND NOT EXISTS (SELECT 1 FROM ${VISTA} v
+                            WHERE v.Art_GTIN=i.codigo_barras OR v.CodAlt_Codigo=i.codigo_barras OR v.Art_Codigo=i.codigo_barras)
+          ORDER BY i.codigo_barras, i.cantidad DESC`)
+      const map = {}
+      for (const row of nuevosRes.recordset) {
+        if (!map[row.codigo_barras])
+          map[row.codigo_barras] = { codigo: row.codigo_barras, nombre: row.nombre, stock: 0, stockPorUbicacion: [] }
+        map[row.codigo_barras].stock += row.cantidad
+        map[row.codigo_barras].stockPorUbicacion.push({ ubicacion: row.ubicacion, cantidad: row.cantidad, color: row.color })
+      }
+      nuevos = Object.values(map)
+    } catch {}
+
+    res.json([...fromVista, ...nuevos])
   } catch (err) {
     console.error('buscar:', err.message)
     res.status(500).json({ mensaje: err.message })
@@ -729,7 +862,7 @@ app.get('/api/almacen/inventario', async (_req, res) => {
     const result = await db.request().query(`
       SELECT
         i.codigo_barras                                          AS codigo,
-        ISNULL(v.Art_Descripcion, i.codigo_barras)               AS nombre,
+        ISNULL(NULLIF(i.nombre,''), ISNULL(v.Art_Descripcion, i.codigo_barras)) AS nombre,
         ISNULL(i.ubicacion, 'Bodega')                            AS ubicacion,
         i.cantidad,
         ISNULL(u.color, '#6B7280')                               AS color

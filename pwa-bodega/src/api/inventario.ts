@@ -139,6 +139,17 @@ export const api = {
       body: JSON.stringify({ codigo, cantidad, nombre, pedido_id: pedidoId ?? null, ubicacion: ubicacion ?? 'Sin ubicar' }),
     }),
 
+  // Registra un producto que aún NO existe en NovaCaja: crea su nombre propio en
+  // la bodega y suma stock al instante (visible en Inventario e Historial).
+  crearProductoNuevo: (p: {
+    codigo_barras: string; descripcion: string; cantidad: number
+    ubicacion: string; piezas_por_caja?: number; proveedor?: string | null
+  }) =>
+    request<MovimientoResponse>('/api/almacen/producto-nuevo', {
+      method: 'POST',
+      body: JSON.stringify(p),
+    }),
+
   registrarSalida: (codigo: string, cantidad: number, ubicacion: string, nombre?: string) =>
     request<MovimientoResponse>('/api/almacen/salida', {
       method: 'POST',
