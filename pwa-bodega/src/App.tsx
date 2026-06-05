@@ -4,11 +4,10 @@ import Salida from './pages/Salida'
 import Historial from './pages/Historial'
 import Buscar from './pages/Buscar'
 import Merma from './pages/Merma'
-import Ubicar from './pages/Ubicar'
 import Nuevos from './pages/Nuevos'
 import GestionUbicaciones from './pages/GestionUbicaciones'
 
-type Tab = 'recepcion' | 'salida' | 'merma' | 'historial' | 'buscar' | 'ubicar' | 'nuevos'
+type Tab = 'recepcion' | 'salida' | 'merma' | 'historial' | 'buscar' | 'nuevos'
 
 const TABS: { id: Tab; label: string; emoji: string }[] = [
   { id: 'recepcion', label: 'Recepción', emoji: '📦' },
@@ -16,8 +15,7 @@ const TABS: { id: Tab; label: string; emoji: string }[] = [
   { id: 'nuevos',    label: 'Nuevos',    emoji: '🆕' },
   { id: 'merma',     label: 'Merma',     emoji: '🗑️' },
   { id: 'historial', label: 'Historial', emoji: '📋' },
-  { id: 'buscar',    label: 'Buscar',    emoji: '🔍' },
-  { id: 'ubicar',    label: 'Inventario',emoji: '📊' },
+  { id: 'buscar',    label: 'Inventario',emoji: '🔍' },
 ]
 
 const TAB_COLOR: Record<Tab, string> = {
@@ -25,8 +23,7 @@ const TAB_COLOR: Record<Tab, string> = {
   salida:    '#D85A30',
   merma:     '#C05621',
   historial: '#1D9E75',
-  buscar:    '#1D9E75',
-  ubicar:    '#3B82F6',
+  buscar:    '#3B82F6',
   nuevos:    '#1D9E75',
 }
 
@@ -35,8 +32,7 @@ const TAB_LABEL: Record<Tab, string> = {
   salida:    'Salida de producto',
   merma:     'Registro de merma',
   historial: 'Historial del día',
-  buscar:    'Buscar producto',
-  ubicar:    'Inventario general',
+  buscar:    'Inventario · cuánto hay y dónde',
   nuevos:    'Productos nuevos',
 }
 
@@ -87,7 +83,6 @@ export default function App() {
         {tab === 'merma'     && <Merma />}
         {tab === 'historial' && <Historial />}
         {tab === 'buscar'    && <Buscar />}
-        {tab === 'ubicar'    && <Ubicar />}
         {tab === 'nuevos'    && <Nuevos />}
       </div>
 

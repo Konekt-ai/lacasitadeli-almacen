@@ -2,13 +2,13 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { api, type Producto, type Ubicacion, type RecepcionEsperada } from '../api/inventario'
 import { useBarcodeScan } from '../hooks/useBarcodeScan'
 import { beepScan, beepOk, beepError } from '../utils/beep'
+import ContadorCantidad from '../components/ContadorCantidad'
 
 type Paso = 'pedido' | 'scan' | 'confirmar' | 'exito' | 'error'
 
 export default function Recepcion() {
   const [paso,        setPaso]        = useState<Paso>('pedido')
   const [producto,    setProducto]    = useState<Producto | null>(null)
-  const [cantidad,    setCantidad]    = useState(1)
   const [error,       setError]       = useState('')
   const [cargando,    setCargando]    = useState(false)
   const [inputManual, setInputManual] = useState('')
@@ -25,6 +25,10 @@ export default function Recepcion() {
   const [piezasResult, setPiezasResult] = useState(0)
   const [piezasPorCaja, setPiezasPorCaja] = useState(1)
   const [cajasResult, setCajasResult] = useState(0)
+  // Entrada directa (sin orden): suma al stock al instante y aparece en Historial
+  const [modoDirecto,     setModoDirecto]     = useState(false)
+  const [totalConteo,     setTotalConteo]     = useState(0)
+  const [stockTrasEntrada, setStockTrasEntrada] = useState(0)
   const scanTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
   const registrandoRef = useRef(false)
 
@@ -62,6 +66,14 @@ export default function Recepcion() {
     }
   }
 
+  function iniciarEntradaDirecta() {
+    setModoDirecto(true)
+    setRecepcionRealId(null)
+    setPedidoFolio(null)
+    setError('')
+    setPaso('scan')
+  }
+
   function handleScanInput(val: string) {
     setInputManual(val)
     if (scanTimerRef.current) clearTimeout(scanTimerRef.current)
@@ -75,7 +87,7 @@ export default function Recepcion() {
     try {
       const prod = await api.getProducto(codigo.trim())
       setProducto(prod)
-      setCantidad(1)
+      setTotalConteo(0)
       setPaso('confirmar')
       beepScan()
     } catch (e) {
@@ -91,6 +103,35 @@ export default function Recepcion() {
 
   async function confirmar() {
     if (!producto || registrandoRef.current) return
+
+    // ── Entrada directa: suma al stock al instante y aparece en Historial ──
+    if (modoDirecto) {
+      if (totalConteo < 1) {
+        setError('La cantidad debe ser mayor a 0.')
+        setPaso('error'); beepError(); return
+      }
+      registrandoRef.current = true
+      setCargando(true)
+      try {
+        const res = await api.registrarEntrada(producto.codigo, totalConteo, producto.nombre, null, ubicSelec)
+        setPiezasResult(totalConteo)
+        setPiezasPorCaja(1)
+        setCajasResult(0)
+        setStockTrasEntrada(res.stockActual)
+        setPaso('exito')
+        beepOk()
+      } catch (e) {
+        setError((e as Error).message)
+        setPaso('error')
+        beepError()
+      } finally {
+        registrandoRef.current = false
+        setCargando(false)
+      }
+      return
+    }
+
+    // ── Entrada con orden de compra (conversión caja→pieza en el backend) ──
     if (recepcionRealId == null) {
       setError('No hay una recepción activa. Vuelve a elegir la orden.')
       setPaso('error')
@@ -102,7 +143,7 @@ export default function Recepcion() {
     try {
       const res = await api.agregarItemRecepcion(recepcionRealId, {
         codigo_barras: producto.codigo,
-        cajas_recibidas: cantidad,
+        cajas_recibidas: totalConteo,
         ubicacion: ubicSelec,
         // piezas_por_caja se resuelve en el backend desde la orden esperada (conversión caja→pieza)
         lote: lote.trim() || undefined,
@@ -110,7 +151,7 @@ export default function Recepcion() {
       })
       setPiezasResult(res.piezas_resultantes)
       setPiezasPorCaja(res.piezas_por_caja)
-      setCajasResult(cantidad)
+      setCajasResult(totalConteo)
       setPaso('exito')
       beepOk()
     } catch (e) {
@@ -124,10 +165,10 @@ export default function Recepcion() {
   }
 
   function reset() {
-    // Continúa en la misma recepción real; si no hay, regresa a elegir orden.
-    setPaso(recepcionRealId == null ? 'pedido' : 'scan')
+    // Entrada directa o recepción activa → vuelve a escanear; si no, a elegir orden.
+    setPaso(modoDirecto || recepcionRealId != null ? 'scan' : 'pedido')
     setProducto(null)
-    setCantidad(1)
+    setTotalConteo(0)
     setInputManual('')
     setError('')
     setCaducidad('')
@@ -136,11 +177,12 @@ export default function Recepcion() {
   }
 
   function resetTotal() {
+    setModoDirecto(false)
     setRecepcionRealId(null)
     setPedidoFolio(null)
     setPaso('pedido')
     setProducto(null)
-    setCantidad(1)
+    setTotalConteo(0)
     setInputManual('')
     setError('')
     setCaducidad('')
@@ -218,13 +260,15 @@ export default function Recepcion() {
       )}
 
       <button
-        onClick={() => seleccionarPedido(null, null)}
+        onClick={iniciarEntradaDirecta}
         style={{
-          padding: '14px', border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 14,
-          background: 'white', fontSize: 14, color: '#5F5E5A', cursor: 'pointer', fontWeight: 500,
+          padding: '16px', border: 'none', borderRadius: 14,
+          background: '#1D9E75', fontSize: 15, color: 'white', cursor: 'pointer', fontWeight: 700,
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
         }}
       >
-        Continuar sin orden de compra →
+        <span>📦 Entrada rápida (sin orden)</span>
+        <span style={{ fontSize: 11, fontWeight: 500, opacity: 0.85 }}>Suma al stock al instante · aparece en Historial</span>
       </button>
     </div>
   )
@@ -240,6 +284,18 @@ export default function Recepcion() {
           <div>
             <p style={{ fontSize: 11, color: '#085041', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>Orden activa</p>
             <p style={{ fontSize: 14, fontWeight: 700, color: '#085041', fontFamily: 'monospace' }}>{pedidoFolio}</p>
+          </div>
+          <button onClick={resetTotal} style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: '#085041', opacity: 0.5, padding: '4px 8px' }}>✕</button>
+        </div>
+      )}
+      {modoDirecto && (
+        <div style={{
+          background: '#E5F7F0', borderRadius: 12, padding: '10px 14px',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+        }}>
+          <div>
+            <p style={{ fontSize: 11, color: '#085041', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>Entrada rápida</p>
+            <p style={{ fontSize: 13, color: '#085041' }}>Suma al stock al instante</p>
           </div>
           <button onClick={resetTotal} style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: '#085041', opacity: 0.5, padding: '4px 8px' }}>✕</button>
         </div>
@@ -297,34 +353,21 @@ export default function Recepcion() {
         <span className={stockClass(producto.stock)}>Stock actual: {producto.stock} pzas</span>
       </div>
 
-      {/* Cantidad */}
+      {/* Conteo: directo en piezas (suma al stock) u órdenes en cajas (convierte) */}
       <div>
-        <p style={{ fontSize: 14, color: '#5F5E5A', marginBottom: 10 }}>¿Cuántas cajas llegaron?</p>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'stretch' }}>
-          <button
-            onClick={() => setCantidad(c => Math.max(1, c - 1))}
-            style={{ width: 80, minHeight: 80, fontSize: 36, fontWeight: 300, border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 16, background: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
-          >−</button>
-          <input
-            data-manual="true"
-            type="number"
-            value={cantidad}
-            min={1}
-            onChange={e => setCantidad(Math.max(1, parseInt(e.target.value) || 1))}
-            style={{
-              flex: 1, textAlign: 'center', fontSize: 40, fontWeight: 700,
-              border: '1.5px solid rgba(29,158,117,0.4)', borderRadius: 16,
-              padding: '16px 0', background: 'white', color: '#1a1a18', minWidth: 0,
-            }}
-          />
-          <button
-            onClick={() => setCantidad(c => c + 1)}
-            style={{ width: 80, minHeight: 80, fontSize: 36, fontWeight: 300, border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 16, background: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
-          >+</button>
-        </div>
-        <p style={{ fontSize: 13, color: '#1D9E75', textAlign: 'center', marginTop: 8 }}>
-          {cantidad} {cantidad === 1 ? 'caja' : 'cajas'} · se convierte a piezas al confirmar
+        <p style={{ fontSize: 14, color: '#5F5E5A', marginBottom: 10 }}>
+          {modoDirecto ? '¿Cuánto llegó?' : '¿Cuántas cajas llegaron?'}
         </p>
+        <ContadorCantidad
+          unidad={modoDirecto ? 'piezas' : 'cajas'}
+          color="#1D9E75"
+          onChange={t => setTotalConteo(t)}
+        />
+        {!modoDirecto && (
+          <p style={{ fontSize: 12, color: '#1D9E75', textAlign: 'center', marginTop: 8 }}>
+            Se convierte a piezas al confirmar (según la orden)
+          </p>
+        )}
       </div>
 
       {/* Ubicación destino */}
@@ -357,40 +400,44 @@ export default function Recepcion() {
         </div>
       )}
 
-      {/* Caducidad y lote (opcionales) */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <label style={{ fontSize: 14, color: '#5F5E5A' }}>Fecha de caducidad (opcional)</label>
-        <input
-          data-manual="true"
-          type="date"
-          value={caducidad}
-          onChange={e => setCaducidad(e.target.value)}
-          style={{
-            padding: '14px', fontSize: 16,
-            border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 12,
-            background: 'white', color: '#1a1a18',
-          }}
-        />
-      </div>
+      {/* Caducidad y lote (solo en recepción con orden) */}
+      {!modoDirecto && (
+        <>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <label style={{ fontSize: 14, color: '#5F5E5A' }}>Fecha de caducidad (opcional)</label>
+            <input
+              data-manual="true"
+              type="date"
+              value={caducidad}
+              onChange={e => setCaducidad(e.target.value)}
+              style={{
+                padding: '14px', fontSize: 16,
+                border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 12,
+                background: 'white', color: '#1a1a18',
+              }}
+            />
+          </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <label style={{ fontSize: 14, color: '#5F5E5A' }}>Lote / Partida (opcional)</label>
-        <input
-          data-manual="true"
-          type="text"
-          value={lote}
-          onChange={e => setLote(e.target.value)}
-          placeholder="Ej. L-2026-014"
-          style={{
-            padding: '14px', fontSize: 16,
-            border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 12,
-            background: 'white', color: '#1a1a18',
-          }}
-        />
-      </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <label style={{ fontSize: 14, color: '#5F5E5A' }}>Lote / Partida (opcional)</label>
+            <input
+              data-manual="true"
+              type="text"
+              value={lote}
+              onChange={e => setLote(e.target.value)}
+              placeholder="Ej. L-2026-014"
+              style={{
+                padding: '14px', fontSize: 16,
+                border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 12,
+                background: 'white', color: '#1a1a18',
+              }}
+            />
+          </div>
+        </>
+      )}
 
-      <button className="btn-primary" onClick={confirmar} disabled={cargando}>
-        {cargando ? 'Guardando...' : '✓ Confirmar entrada'}
+      <button className="btn-primary" onClick={confirmar} disabled={cargando || totalConteo < 1}>
+        {cargando ? 'Guardando...' : totalConteo < 1 ? 'Indica la cantidad' : '✓ Confirmar entrada'}
       </button>
       <button className="btn-secondary" onClick={reset}>Cancelar</button>
     </div>
@@ -417,9 +464,13 @@ export default function Recepcion() {
           {cajasResult} {cajasResult === 1 ? 'caja' : 'cajas'} × {piezasPorCaja} piezas
         </p>
       )}
-      <p style={{ fontSize: 14, color: '#1D9E75', fontWeight: 600 }}>Stock actual: {producto.stock} pzas</p>
+      <p style={{ fontSize: 14, color: '#1D9E75', fontWeight: 600 }}>
+        Stock actual: {modoDirecto ? stockTrasEntrada : producto.stock} pzas
+      </p>
       <p style={{ fontSize: 12, color: '#aaa', maxWidth: 260 }}>
-        Se sumará al stock cuando se confirme la recepción
+        {modoDirecto
+          ? 'Ya se sumó al stock · puedes corregirlo en el Historial'
+          : 'Se sumará al stock cuando se confirme la recepción'}
       </p>
       <span style={{
         fontSize: 13, padding: '5px 14px', borderRadius: 20, fontWeight: 600,
@@ -437,7 +488,7 @@ export default function Recepcion() {
       )}
       <div style={{ marginTop: 20, width: '100%', display: 'flex', flexDirection: 'column', gap: 10 }}>
         <button className="btn-primary" onClick={reset}>Escanear otro producto</button>
-        <button className="btn-secondary" onClick={resetTotal}>Cambiar orden</button>
+        <button className="btn-secondary" onClick={resetTotal}>{modoDirecto ? 'Terminar' : 'Cambiar orden'}</button>
       </div>
     </div>
   )

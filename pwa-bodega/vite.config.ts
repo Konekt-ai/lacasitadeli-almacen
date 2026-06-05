@@ -13,7 +13,8 @@ export default defineConfig({
         description: 'Control de inventario para Zebra TC52',
         theme_color: '#1D9E75',
         background_color: '#ffffff',
-        display: 'standalone',
+        display: 'fullscreen',
+        display_override: ['fullscreen', 'standalone'],
         orientation: 'portrait',
         start_url: '/',
         icons: [

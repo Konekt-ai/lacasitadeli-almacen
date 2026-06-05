@@ -48,6 +48,7 @@ export default function Buscar() {
           onChange={e => setQuery(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && buscar()}
           placeholder="Nombre o código de barras..."
+          autoFocus
           style={{
             flex: 1, padding: '14px', fontSize: 16,
             border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 12,
@@ -67,9 +68,16 @@ export default function Buscar() {
       </div>
 
       {!buscado && (
-        <p style={{ fontSize: 13, color: '#aaa', textAlign: 'center' }}>
-          Escribe un nombre o escanea un código
-        </p>
+        <div style={{
+          background: '#f9f9f7', borderRadius: 14, padding: '28px 20px',
+          border: '1.5px dashed rgba(0,0,0,0.10)', textAlign: 'center', marginTop: 4,
+        }}>
+          <p style={{ fontSize: 34, marginBottom: 8 }}>🔍</p>
+          <p style={{ fontSize: 14, color: '#5F5E5A', fontWeight: 600 }}>Consulta el inventario</p>
+          <p style={{ fontSize: 12, color: '#aaa', marginTop: 6, maxWidth: 260, marginInline: 'auto' }}>
+            Busca un producto por nombre o escanea su código para ver cuánto hay y en qué ubicación está.
+          </p>
+        </div>
       )}
 
       {cargando && <p style={{ textAlign: 'center', color: '#1D9E75', fontSize: 14 }}>Buscando...</p>}

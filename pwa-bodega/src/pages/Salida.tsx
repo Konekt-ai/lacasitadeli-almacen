@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from 'react'
 import { api, type Producto, type StockUbicacion, type Ubicacion } from '../api/inventario'
 import { useBarcodeScan } from '../hooks/useBarcodeScan'
 import { beepScan, beepOk, beepError } from '../utils/beep'
+import ContadorCantidad from '../components/ContadorCantidad'
 
 type Paso = 'scan' | 'elegirOrigen' | 'elegirDestino' | 'cantidad' | 'exito' | 'error'
 
@@ -245,26 +246,12 @@ export default function Salida() {
         <p style={{ fontSize: 11, color: '#aaa', marginTop: 8 }}>Disponible en {origen.ubicacion}: {origen.cantidad} pzas</p>
       </div>
 
-      <div>
-        <p style={{ fontSize: 14, color: '#5F5E5A', marginBottom: 10 }}>¿Cuántas piezas?</p>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'stretch' }}>
-          <button onClick={() => setCantidad(c => Math.max(1, c - 1))}
-            style={{ width: 72, minHeight: 72, fontSize: 32, fontWeight: 300, border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 16, background: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-            −</button>
-          <input
-            data-manual="true" type="number" value={cantidad} min={1} max={origen.cantidad}
-            onChange={e => setCantidad(Math.min(origen.cantidad, Math.max(1, parseInt(e.target.value) || 1)))}
-            style={{
-              flex: 1, textAlign: 'center', fontSize: 36, fontWeight: 700,
-              border: '1.5px solid rgba(216,90,48,0.4)', borderRadius: 16,
-              padding: '12px 0', background: 'white', color: '#1a1a18', minWidth: 0,
-            }}
-          />
-          <button onClick={() => setCantidad(c => Math.min(origen.cantidad, c + 1))}
-            style={{ width: 72, minHeight: 72, fontSize: 32, fontWeight: 300, border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 16, background: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-            +</button>
-        </div>
-      </div>
+      <ContadorCantidad
+        unidad="piezas"
+        color="#D85A30"
+        max={origen.cantidad}
+        onChange={t => setCantidad(t)}
+      />
 
       <button className="btn-primary rojo" onClick={confirmar} disabled={cargando}
         style={{ background: '#D85A30' }}>
