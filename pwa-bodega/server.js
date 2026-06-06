@@ -837,7 +837,55 @@ app.post('/api/almacen/movimientos/:id/editar', async (req, res) => {
   }
 })
 
+// Suma cantidad a una ubicación dentro de una transacción (crea la fila si falta)
+async function sumarUbicTx(t, codigo, ubic, cantidad) {
+  if (cantidad <= 0) return
+  await t.request()
+    .input('codigo',    sql.VarChar(50), codigo)
+    .input('ubicacion', sql.VarChar(50), ubic)
+    .input('cantidad',  sql.Int,         cantidad)
+    .query(`
+      MERGE ${INV} AS target
+      USING (SELECT @codigo AS codigo_barras, @ubicacion AS ubicacion) AS src
+        ON target.codigo_barras=src.codigo_barras AND target.ubicacion=src.ubicacion
+      WHEN MATCHED THEN UPDATE SET cantidad=target.cantidad+@cantidad, ultima_entrada=GETDATE()
+      WHEN NOT MATCHED THEN INSERT (codigo_barras,ubicacion,cantidad,ultima_entrada)
+        VALUES (@codigo,@ubicacion,@cantidad,GETDATE());`)
+}
+
+// Quita hasta `cantidad` de UNA ubicación, sin pasar de 0. Devuelve lo quitado.
+async function quitarUbicTx(t, codigo, ubic, cantidad) {
+  if (cantidad <= 0) return 0
+  const r = await t.request()
+    .input('codigo', sql.VarChar(50), codigo).input('ubicacion', sql.VarChar(50), ubic)
+    .query(`SELECT ISNULL(SUM(cantidad),0) AS s FROM ${INV} WHERE codigo_barras=@codigo AND ubicacion=@ubicacion`)
+  const quitar = Math.min(r.recordset[0]?.s ?? 0, cantidad)
+  if (quitar > 0) {
+    await t.request()
+      .input('codigo', sql.VarChar(50), codigo).input('ubicacion', sql.VarChar(50), ubic).input('q', sql.Int, quitar)
+      .query(`UPDATE ${INV} SET cantidad=cantidad-@q, ultima_salida=GETDATE()
+              WHERE codigo_barras=@codigo AND ubicacion=@ubicacion`)
+  }
+  return quitar
+}
+
+// Quita `cantidad` del producto: primero de la ubicación preferida y, si no
+// alcanza (porque ya se movió), del resto (más stock primero). Nunca deja negativo.
+async function quitarProductoTx(t, codigo, ubicPreferida, cantidad) {
+  let restante = cantidad - await quitarUbicTx(t, codigo, ubicPreferida, cantidad)
+  while (restante > 0) {
+    const r = await t.request().input('codigo', sql.VarChar(50), codigo)
+      .query(`SELECT TOP 1 ubicacion FROM ${INV} WHERE codigo_barras=@codigo AND cantidad>0 ORDER BY cantidad DESC`)
+    const ubic = r.recordset[0]?.ubicacion
+    if (!ubic) break
+    const q = await quitarUbicTx(t, codigo, ubic, restante)
+    if (q <= 0) break
+    restante -= q
+  }
+}
+
 // ── DELETE /api/almacen/movimientos/:id — borrar y revertir su efecto en stock ─
+// Siempre se puede borrar: revierte lo que se pueda sin dejar stock negativo.
 app.delete('/api/almacen/movimientos/:id', async (req, res) => {
   const id = parseInt(req.params.id, 10)
   if (isNaN(id)) return res.status(400).json({ mensaje: 'ID inválido' })
@@ -852,39 +900,19 @@ app.delete('/api/almacen/movimientos/:id', async (req, res) => {
     if (!mov) return res.status(404).json({ mensaje: 'Movimiento no encontrado' })
     const { codigo_barras, tipo, cantidad, ubicacion, area } = mov
 
-    // Ajustes por ubicación que revierten el efecto del movimiento
-    const ajustes = []
-    if (tipo === 'entrada')       ajustes.push({ ubic: ubicacion, delta: -cantidad })
-    else if (tipo === 'salida')   ajustes.push({ ubic: ubicacion, delta: +cantidad })
-    else if (tipo === 'merma')    ajustes.push({ ubic: ubicacion, delta: +cantidad })
-    else if (tipo === 'traslado') {
-      ajustes.push({ ubic: ubicacion, delta: -cantidad }) // quitar del destino
-      ajustes.push({ ubic: area,      delta: +cantidad }) // devolver al origen
-    } else ajustes.push({ ubic: ubicacion, delta: -cantidad })
-
-    // Evitar que algún ajuste deje stock negativo
-    for (const a of ajustes) {
-      if (a.delta < 0) {
-        const s = await getStockEnUbic(db, codigo_barras, a.ubic)
-        if (s + a.delta < 0)
-          return res.status(400).json({ mensaje: `No se puede borrar: el stock quedaría negativo en ${a.ubic} (hay ${s}). Ajusta la cantidad primero.` })
-      }
-    }
-
     const t = db.transaction()
     await t.begin()
     try {
-      for (const a of ajustes) {
-        await t.request()
-          .input('codigo',    sql.VarChar(50), codigo_barras)
-          .input('ubicacion', sql.VarChar(50), a.ubic)
-          .input('delta',     sql.Int,         a.delta)
-          .query(`
-            MERGE ${INV} AS target
-            USING (SELECT @codigo AS codigo_barras, @ubicacion AS ubicacion) AS src
-              ON target.codigo_barras=src.codigo_barras AND target.ubicacion=src.ubicacion
-            WHEN MATCHED THEN UPDATE SET cantidad=target.cantidad+@delta
-            WHEN NOT MATCHED THEN INSERT (codigo_barras,ubicacion,cantidad) VALUES (@codigo,@ubicacion,@delta);`)
+      if (tipo === 'salida' || tipo === 'merma') {
+        // Devolver el stock a su ubicación
+        await sumarUbicTx(t, codigo_barras, ubicacion, cantidad)
+      } else if (tipo === 'traslado') {
+        // Regresar al origen lo que todavía quede en el destino (ubicacion=destino, area=origen)
+        const movido = await quitarUbicTx(t, codigo_barras, ubicacion, cantidad)
+        await sumarUbicTx(t, codigo_barras, area, movido)
+      } else {
+        // entrada (o cualquier otro tipo que sume): quitar del producto sin dejar negativo
+        await quitarProductoTx(t, codigo_barras, ubicacion, cantidad)
       }
       await t.request().input('id', sql.Int, id).query(`DELETE FROM ${MOV} WHERE id=@id`)
       await t.commit()
