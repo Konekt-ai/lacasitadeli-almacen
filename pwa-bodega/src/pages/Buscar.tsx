@@ -37,6 +37,25 @@ export default function Buscar() {
 
   useBarcodeScan(buscar)
 
+  async function renombrar(codigo: string, nombreActual: string) {
+    const nuevo = window.prompt(
+      `Corregir el nombre del producto.\n\nEscribe el nombre real (no el código).`,
+      nombreActual
+    )
+    if (nuevo === null) return
+    const nombre = nuevo.trim()
+    if (nombre.length < 3) { alert('El nombre debe tener al menos 3 letras.'); return }
+    if (/^[\d\s.-]+$/.test(nombre)) { alert('El nombre no puede ser solo números (eso es un código).'); return }
+    try {
+      setCargando(true)
+      await api.actualizarNombre(codigo, nombre)
+      await buscar()
+    } catch (e) {
+      alert((e as Error).message)
+      setCargando(false)
+    }
+  }
+
   return (
     <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
 
@@ -112,7 +131,14 @@ export default function Buscar() {
               }}>
                 {/* Info del producto */}
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <p style={{ fontSize: 14, fontWeight: 600, color: '#1a1a18' }}>{r.nombre}</p>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <p style={{ fontSize: 14, fontWeight: 600, color: '#1a1a18' }}>{r.nombre}</p>
+                    <button
+                      onClick={() => renombrar(r.codigo, r.nombre)}
+                      style={{ background: '#eef6f2', border: '1px solid rgba(29,158,117,0.25)', borderRadius: 6, padding: '2px 6px', cursor: 'pointer', fontSize: 12, flexShrink: 0 }}
+                      title="Corregir nombre"
+                    >🏷️</button>
+                  </div>
                   <p style={{ fontSize: 11, color: '#bbb', fontFamily: 'monospace', marginTop: 2 }}>{r.codigo}</p>
 
                   {/* Chips de ubicación con cantidad — visibles siempre */}

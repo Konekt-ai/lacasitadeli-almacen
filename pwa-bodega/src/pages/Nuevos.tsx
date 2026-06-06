@@ -95,6 +95,8 @@ export default function Nuevos() {
     const desc = fDesc.trim()
     const cod  = fCodigo.trim()
     if (desc.length < 3) { notify('Escribe la descripción'); beepError(); return }
+    if (/^[\d\s.-]+$/.test(desc)) { notify('El nombre no puede ser solo números (eso es un código)'); beepError(); return }
+    if (desc === cod)    { notify('El nombre no puede ser el código. Escribe el nombre real.'); beepError(); return }
     if (cod.length < 4)  { notify('Escanea o escribe el código de barras'); beepError(); return }
     if (fCantidad < 1)   { notify('Indica la cantidad'); beepError(); return }
     setGuardando(true)

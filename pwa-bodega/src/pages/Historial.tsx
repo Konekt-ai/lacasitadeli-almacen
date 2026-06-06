@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react'
 import { api, type Movimiento } from '../api/inventario'
 
 const TIPO_CONFIG = {
-  entrada: { icon: '↓', bg: '#E1F5EE', color: '#085041', signo: '+' },
-  salida:  { icon: '↑', bg: '#FAECE7', color: '#712B13', signo: '−' },
-  merma:   { icon: '🗑', bg: '#FEF3C7', color: '#92400E', signo: '−' },
+  entrada:  { icon: '↓', bg: '#E1F5EE', color: '#085041', signo: '+' },
+  salida:   { icon: '↑', bg: '#FAECE7', color: '#712B13', signo: '−' },
+  merma:    { icon: '🗑', bg: '#FEF3C7', color: '#92400E', signo: '−' },
+  traslado: { icon: '↔', bg: '#E0F2FE', color: '#075985', signo: '' },
 }
 
 export default function Historial() {
@@ -55,6 +56,38 @@ export default function Historial() {
     }
   }
 
+  async function handleEditarNombre(codigo: string, nombreActual: string) {
+    const nuevo = window.prompt(
+      `Corregir el nombre del producto.\n\nNo escribas el código aquí, escribe el nombre real (ej. "Coca Cola 600ml").`,
+      nombreActual
+    )
+    if (nuevo === null) return
+    const nombre = nuevo.trim()
+    if (nombre.length < 3) { alert('El nombre debe tener al menos 3 letras.'); return }
+    if (/^[\d\s.-]+$/.test(nombre)) { alert('El nombre no puede ser solo números (eso es un código).'); return }
+
+    try {
+      setCargando(true)
+      await api.actualizarNombre(codigo, nombre)
+      await cargar()
+    } catch (e) {
+      alert((e as Error).message)
+      setCargando(false)
+    }
+  }
+
+  async function handleBorrar(id: number, nombreProducto: string) {
+    if (!window.confirm(`¿Borrar este movimiento?\n\n${nombreProducto}\n\nSe revertirá su efecto en el stock. Esta acción no se puede deshacer.`)) return
+    try {
+      setCargando(true)
+      await api.eliminarMovimiento(id)
+      await cargar()
+    } catch (e) {
+      alert((e as Error).message)
+      setCargando(false)
+    }
+  }
+
   if (cargando) return <div style={{ padding: 24, textAlign: 'center', color: '#5F5E5A', fontSize: 14 }}>Cargando movimientos...</div>
   if (error) return (
     <div style={{ padding: 24, textAlign: 'center' }}>
@@ -92,16 +125,32 @@ export default function Historial() {
                 </p>
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-                <p style={{ fontSize: 16, fontWeight: 700, color: cfg.color }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                <p style={{ fontSize: 16, fontWeight: 700, color: cfg.color, minWidth: 34, textAlign: 'right' }}>
                   {cfg.signo}{m.cantidad}
                 </p>
+                {m.es_bodega === 1 && (
+                  <button
+                    onClick={() => handleEditarNombre(m.codigo, m.nombre ?? m.codigo)}
+                    style={{ background: '#eef6f2', border: '1px solid rgba(29,158,117,0.25)', borderRadius: '6px', padding: '5px 7px', cursor: 'pointer', fontSize: 14 }}
+                    title="Corregir nombre"
+                  >
+                    🏷️
+                  </button>
+                )}
                 <button
                   onClick={() => handleEditar(m.id, m.cantidad, m.nombre ?? m.codigo)}
-                  style={{ background: '#f4f4f2', border: '1px solid rgba(0,0,0,0.08)', borderRadius: '6px', padding: '5px 8px', cursor: 'pointer', fontSize: 14 }}
-                  title="Editar"
+                  style={{ background: '#f4f4f2', border: '1px solid rgba(0,0,0,0.08)', borderRadius: '6px', padding: '5px 7px', cursor: 'pointer', fontSize: 14 }}
+                  title="Editar cantidad"
                 >
                   ✏️
+                </button>
+                <button
+                  onClick={() => handleBorrar(m.id, m.nombre ?? m.codigo)}
+                  style={{ background: '#fbece7', border: '1px solid rgba(216,90,48,0.25)', borderRadius: '6px', padding: '5px 7px', cursor: 'pointer', fontSize: 14 }}
+                  title="Borrar movimiento"
+                >
+                  🗑️
                 </button>
               </div>
             </div>

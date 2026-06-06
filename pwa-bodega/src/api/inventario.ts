@@ -21,13 +21,14 @@ export interface Movimiento {
   id: number
   codigo: string
   nombre: string | null
-  tipo: 'entrada' | 'salida' | 'merma'
+  tipo: 'entrada' | 'salida' | 'merma' | 'traslado'
   cantidad: number
   stock_antes: number
   stock_despues: number
   usuario: string
   fecha: string
   ubicacion?: string | null
+  es_bodega?: number   // 1 = producto que maneja la bodega (se puede editar su nombre)
 }
 
 export interface Ubicacion {
@@ -170,6 +171,17 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ nuevaCantidad }),
     }),
+
+  eliminarMovimiento: (id: number) =>
+    request<{ ok: boolean; stockActual: number; mensaje: string }>(
+      `/api/almacen/movimientos/${id}`, { method: 'DELETE' }),
+
+  actualizarNombre: (codigo: string, nombre: string) =>
+    request<{ ok: boolean; nombre: string; mensaje: string }>(
+      `/api/almacen/producto/${encodeURIComponent(codigo)}/nombre`, {
+        method: 'POST',
+        body: JSON.stringify({ nombre }),
+      }),
 
   buscarProductos: (q: string) =>
     request<Producto[]>(`/api/almacen/buscar?q=${encodeURIComponent(q)}`),

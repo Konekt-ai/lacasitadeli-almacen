@@ -188,15 +188,8 @@ function adquirirLock(codigo, tipo) {
 }
 
 async function getNombre(db, codigo) {
-  const r = await db.request()
-    .input('codigo', sql.NVarChar(50), codigo)
-    .query(`SELECT TOP 1 Art_Descripcion AS nombre FROM ${VISTA}
-            WHERE Art_GTIN=@codigo OR CodAlt_Codigo=@codigo OR Art_Codigo=@codigo OR Art_PLU=@codigo
-            ORDER BY Art_Codigo`)
-  if (r.recordset[0]?.nombre) return r.recordset[0].nombre
-
-  // Fallback: productos nuevos que aún no están en NovaCaja pero la bodega ya
-  // registró con su nombre propio en inventario_bodega.
+  // 1. Nombre propio de la bodega (override): vale para productos nuevos y para
+  //    cuando corrigen un nombre mal puesto. Tiene prioridad sobre NovaCaja.
   try {
     const r2 = await db.request()
       .input('codigo', sql.VarChar(50), codigo)
@@ -205,7 +198,13 @@ async function getNombre(db, codigo) {
     if (r2.recordset[0]?.nombre) return r2.recordset[0].nombre
   } catch {}
 
-  return null
+  // 2. Nombre del catálogo de NovaCaja
+  const r = await db.request()
+    .input('codigo', sql.NVarChar(50), codigo)
+    .query(`SELECT TOP 1 Art_Descripcion AS nombre FROM ${VISTA}
+            WHERE Art_GTIN=@codigo OR CodAlt_Codigo=@codigo OR Art_Codigo=@codigo OR Art_PLU=@codigo
+            ORDER BY Art_Codigo`)
+  return r.recordset[0]?.nombre ?? null
 }
 
 async function getStock(db, codigo) {
@@ -506,12 +505,18 @@ async function doSalida(db, codigo, cantidad, ubic, stockEnUbic, res) {
   const t = db.transaction()
   await t.begin()
   try {
-    await t.request()
+    // Decremento atómico: solo descuenta si REALMENTE hay suficiente.
+    // Evita stock negativo aunque la verificación previa quedara desfasada.
+    const upd = await t.request()
       .input('codigo',    sql.VarChar(50), codigo)
       .input('cantidad',  sql.Int,         cantidad)
       .input('ubicacion', sql.VarChar(50), ubic)
       .query(`UPDATE ${INV} SET cantidad=cantidad-@cantidad, ultima_salida=GETDATE()
-              WHERE codigo_barras=@codigo AND ubicacion=@ubicacion`)
+              WHERE codigo_barras=@codigo AND ubicacion=@ubicacion AND cantidad>=@cantidad`)
+    if (upd.rowsAffected[0] === 0) {
+      await t.rollback()
+      return res.status(400).json({ mensaje: `Stock insuficiente en ${ubic}. Hay ${stockEnUbic} pzas y se intentó sacar ${cantidad}.` })
+    }
     await t.request()
       .input('codigo',       sql.VarChar(50), codigo)
       .input('cantidad',     sql.Int,         cantidad)
@@ -566,12 +571,16 @@ async function doMerma(db, codigo, cantidad, ubic, motivo, notas, res) {
   const t = db.transaction()
   await t.begin()
   try {
-    await t.request()
+    const upd = await t.request()
       .input('codigo',    sql.VarChar(50), codigo)
       .input('cantidad',  sql.Int,         cantidad)
       .input('ubicacion', sql.VarChar(50), ubic)
       .query(`UPDATE ${INV} SET cantidad=cantidad-@cantidad, ultima_salida=GETDATE()
-              WHERE codigo_barras=@codigo AND ubicacion=@ubicacion`)
+              WHERE codigo_barras=@codigo AND ubicacion=@ubicacion AND cantidad>=@cantidad`)
+    if (upd.rowsAffected[0] === 0) {
+      await t.rollback()
+      return res.status(400).json({ mensaje: `Stock insuficiente en ${ubic} para la merma de ${cantidad} pzas.` })
+    }
     await t.request()
       .input('codigo',       sql.VarChar(50),  codigo)
       .input('cantidad',     sql.Int,           cantidad)
@@ -593,8 +602,9 @@ app.get('/api/almacen/movimientos', async (_req, res) => {
     const db = await getPool()
     const result = await db.request().query(`
       SELECT m.id,
-             m.codigo_barras                            AS codigo,
-             ISNULL(v.Art_Descripcion,m.codigo_barras)  AS nombre,
+             m.codigo_barras                                          AS codigo,
+             ISNULL(ib.nombre, ISNULL(v.Art_Descripcion, m.codigo_barras)) AS nombre,
+             1                                                        AS es_bodega,
              m.tipo, m.cantidad,
              ISNULL(m.stock_antes,0)                    AS stock_antes,
              ISNULL(m.stock_despues,0)                  AS stock_despues,
@@ -604,6 +614,8 @@ app.get('/api/almacen/movimientos', async (_req, res) => {
       FROM ${MOV} m
       OUTER APPLY (SELECT TOP 1 Art_Descripcion FROM ${VISTA}
                    WHERE Art_GTIN=m.codigo_barras OR CodAlt_Codigo=m.codigo_barras) v
+      OUTER APPLY (SELECT TOP 1 nombre FROM ${INV}
+                   WHERE codigo_barras=m.codigo_barras AND nombre IS NOT NULL AND nombre<>'') ib
       WHERE CAST(m.fecha AS DATE)=CAST(GETDATE() AS DATE)
       ORDER BY m.fecha DESC`)
     res.json(result.recordset)
@@ -627,7 +639,11 @@ app.get('/api/almacen/buscar', async (req, res) => {
         SELECT TOP 15
           v.Art_GTIN                 AS codigo,
           ISNULL(v.CodAlt_Codigo,'') AS codigo_alt,
-          v.Art_Descripcion          AS nombre,
+          ISNULL((
+            SELECT TOP 1 nombre FROM ${INV}
+            WHERE (codigo_barras = v.Art_GTIN OR codigo_barras = v.CodAlt_Codigo)
+              AND nombre IS NOT NULL AND nombre<>''
+          ), v.Art_Descripcion)      AS nombre,
           ISNULL((
             SELECT SUM(cantidad) FROM ${INV}
             WHERE codigo_barras = v.Art_GTIN
@@ -736,14 +752,18 @@ app.post('/api/almacen/traslado', async (req, res) => {
     const t = db.transaction()
     await t.begin()
     try {
-      // Restar del origen (también actualiza filas con ubicacion NULL si el origen es Bodega)
-      await t.request()
+      // Restar del origen — atómico: solo si esa ubicación tiene suficiente.
+      const updOrigen = await t.request()
         .input('codigo',    sql.VarChar(50), codigo)
         .input('cantidad',  sql.Int,         cantidad)
         .input('ubicacion', sql.VarChar(50), de_ubicacion)
         .query(`UPDATE ${INV} SET cantidad=cantidad-@cantidad, ultima_salida=GETDATE()
-                WHERE codigo_barras=@codigo
+                WHERE codigo_barras=@codigo AND cantidad>=@cantidad
                   AND (ubicacion=@ubicacion OR (ubicacion IS NULL AND @ubicacion='Bodega'))`)
+      if (updOrigen.rowsAffected[0] === 0) {
+        await t.rollback()
+        return res.status(400).json({ mensaje: `Stock insuficiente en ${de_ubicacion}. Disponible: ${stockOrigen} pzas` })
+      }
       // Sumar al destino
       await t.request()
         .input('codigo',    sql.VarChar(50), codigo)
@@ -813,6 +833,103 @@ app.post('/api/almacen/movimientos/:id/editar', async (req, res) => {
     res.json({ ok: true, mensaje: 'Corregido' })
   } catch (err) {
     console.error('editar movimiento:', err.message)
+    res.status(500).json({ mensaje: err.message })
+  }
+})
+
+// ── DELETE /api/almacen/movimientos/:id — borrar y revertir su efecto en stock ─
+app.delete('/api/almacen/movimientos/:id', async (req, res) => {
+  const id = parseInt(req.params.id, 10)
+  if (isNaN(id)) return res.status(400).json({ mensaje: 'ID inválido' })
+  try {
+    const db = await getPool()
+    const r = await db.request().input('id', sql.Int, id)
+      .query(`SELECT codigo_barras, tipo, cantidad,
+                     ISNULL(ubicacion,'Bodega') AS ubicacion,
+                     ISNULL(area,'Bodega')      AS area
+              FROM ${MOV} WHERE id=@id`)
+    const mov = r.recordset[0]
+    if (!mov) return res.status(404).json({ mensaje: 'Movimiento no encontrado' })
+    const { codigo_barras, tipo, cantidad, ubicacion, area } = mov
+
+    // Ajustes por ubicación que revierten el efecto del movimiento
+    const ajustes = []
+    if (tipo === 'entrada')       ajustes.push({ ubic: ubicacion, delta: -cantidad })
+    else if (tipo === 'salida')   ajustes.push({ ubic: ubicacion, delta: +cantidad })
+    else if (tipo === 'merma')    ajustes.push({ ubic: ubicacion, delta: +cantidad })
+    else if (tipo === 'traslado') {
+      ajustes.push({ ubic: ubicacion, delta: -cantidad }) // quitar del destino
+      ajustes.push({ ubic: area,      delta: +cantidad }) // devolver al origen
+    } else ajustes.push({ ubic: ubicacion, delta: -cantidad })
+
+    // Evitar que algún ajuste deje stock negativo
+    for (const a of ajustes) {
+      if (a.delta < 0) {
+        const s = await getStockEnUbic(db, codigo_barras, a.ubic)
+        if (s + a.delta < 0)
+          return res.status(400).json({ mensaje: `No se puede borrar: el stock quedaría negativo en ${a.ubic} (hay ${s}). Ajusta la cantidad primero.` })
+      }
+    }
+
+    const t = db.transaction()
+    await t.begin()
+    try {
+      for (const a of ajustes) {
+        await t.request()
+          .input('codigo',    sql.VarChar(50), codigo_barras)
+          .input('ubicacion', sql.VarChar(50), a.ubic)
+          .input('delta',     sql.Int,         a.delta)
+          .query(`
+            MERGE ${INV} AS target
+            USING (SELECT @codigo AS codigo_barras, @ubicacion AS ubicacion) AS src
+              ON target.codigo_barras=src.codigo_barras AND target.ubicacion=src.ubicacion
+            WHEN MATCHED THEN UPDATE SET cantidad=target.cantidad+@delta
+            WHEN NOT MATCHED THEN INSERT (codigo_barras,ubicacion,cantidad) VALUES (@codigo,@ubicacion,@delta);`)
+      }
+      await t.request().input('id', sql.Int, id).query(`DELETE FROM ${MOV} WHERE id=@id`)
+      await t.commit()
+    } catch (err) { await t.rollback(); throw err }
+
+    res.json({ ok: true, stockActual: await getStock(db, codigo_barras), mensaje: 'Movimiento borrado' })
+  } catch (err) {
+    console.error('borrar movimiento:', err.message)
+    res.status(500).json({ mensaje: err.message })
+  }
+})
+
+// ── POST /api/almacen/producto/:codigo/nombre — corregir el nombre ─────────────
+// Solo afecta productos que la bodega maneja por su cuenta (guardados en
+// inventario_bodega). Rechaza nombres que sean solo números (eso es un código).
+app.post('/api/almacen/producto/:codigo/nombre', async (req, res) => {
+  const codigo = String(req.params.codigo || '').trim()
+  const nombre = String(req.body?.nombre || '').trim()
+  if (!codigo) return res.status(400).json({ mensaje: 'Código inválido' })
+  if (nombre.length < 3) return res.status(400).json({ mensaje: 'El nombre debe tener al menos 3 letras' })
+  if (/^[\d\s.-]+$/.test(nombre)) return res.status(400).json({ mensaje: 'El nombre no puede ser solo números (eso es un código)' })
+  try {
+    const db = await getPool()
+    // Aplica el nombre a TODAS las filas del producto (todas las ubicaciones)
+    const r = await db.request()
+      .input('codigo', sql.VarChar(50),  codigo)
+      .input('nombre', sql.VarChar(200), nombre)
+      .query(`UPDATE ${INV} SET nombre=@nombre WHERE codigo_barras=@codigo`)
+    // Si no había ninguna fila (producto sin stock en bodega), crea una en blanco
+    // solo para guardar el nombre corregido (cantidad 0, no afecta inventario).
+    if (r.rowsAffected[0] === 0) {
+      await db.request()
+        .input('codigo', sql.VarChar(50),  codigo)
+        .input('nombre', sql.VarChar(200), nombre)
+        .query(`
+          MERGE ${INV} AS target
+          USING (SELECT @codigo AS codigo_barras, 'Bodega' AS ubicacion) AS src
+            ON target.codigo_barras=src.codigo_barras AND target.ubicacion=src.ubicacion
+          WHEN MATCHED THEN UPDATE SET nombre=@nombre
+          WHEN NOT MATCHED THEN INSERT (codigo_barras,ubicacion,cantidad,nombre)
+            VALUES (@codigo,'Bodega',0,@nombre);`)
+    }
+    res.json({ ok: true, nombre, mensaje: 'Nombre actualizado' })
+  } catch (err) {
+    console.error('editar nombre:', err.message)
     res.status(500).json({ mensaje: err.message })
   }
 })
