@@ -98,7 +98,7 @@ export default function Nuevos() {
     if (/^[\d\s.-]+$/.test(desc)) { notify('El nombre no puede ser solo números (eso es un código)'); beepError(); return }
     if (desc === cod)    { notify('El nombre no puede ser el código. Escribe el nombre real.'); beepError(); return }
     if (cod.length < 4)  { notify('Escanea o escribe el código de barras'); beepError(); return }
-    if (fCantidad < 1)   { notify('Indica la cantidad'); beepError(); return }
+    // Solo nombre y código son obligatorios; la cantidad y lo demás es opcional.
     setGuardando(true)
     try {
       await api.crearProductoNuevo({
@@ -122,6 +122,13 @@ export default function Nuevos() {
     border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 12, background: 'white', color: '#1a1a18',
   }
   const labelStyle: React.CSSProperties = { fontSize: 11, color: '#888', fontWeight: 600, marginBottom: 4, display: 'block' }
+
+  // Obligatorios para dar de alta: SOLO nombre y código. Lo demás es opcional.
+  const _desc = fDesc.trim()
+  const _cod  = fCodigo.trim()
+  const nombreOk = _desc.length >= 3 && !/^[\d\s.-]+$/.test(_desc) && _desc !== _cod
+  const codigoOk = _cod.length >= 4
+  const puedeRegistrar = nombreOk && codigoOk
 
   return (
     <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -170,7 +177,7 @@ export default function Nuevos() {
           </div>
 
           <div>
-            <label style={labelStyle}>Cantidad *</label>
+            <label style={labelStyle}>Cantidad (opcional)</label>
             <ContadorCantidad unidad="piezas" color={VERDE}
               piezasPorCajaInicial={parseInt(fPpc) || 1}
               onChange={t => setFCantidad(t)} />
@@ -196,13 +203,19 @@ export default function Nuevos() {
             </div>
           )}
 
+          {!puedeRegistrar && (
+            <p style={{ fontSize: 12, color: '#C05621', fontWeight: 600, textAlign: 'center' }}>
+              {!nombreOk ? '✍️ Falta el nombre del producto' : '📷 Falta el código de barras'}
+            </p>
+          )}
+
           <div style={{ display: 'flex', gap: 10 }}>
             <button onClick={cerrarCrear}
               style={{ flex: 1, padding: 14, borderRadius: 12, background: '#eee', color: '#666', fontSize: 15, fontWeight: 600 }}>
               Cancelar
             </button>
-            <button onClick={crear} disabled={guardando || fCantidad < 1}
-              style={{ flex: 2, padding: 14, borderRadius: 12, background: VERDE, color: 'white', fontSize: 15, fontWeight: 700, opacity: guardando || fCantidad < 1 ? 0.5 : 1 }}>
+            <button onClick={crear} disabled={guardando || !puedeRegistrar}
+              style={{ flex: 2, padding: 14, borderRadius: 12, background: VERDE, color: 'white', fontSize: 15, fontWeight: 700, opacity: guardando || !puedeRegistrar ? 0.5 : 1 }}>
               {guardando ? 'Guardando...' : `Registrar${fCantidad > 0 ? ` · ${fCantidad} pzas` : ''}`}
             </button>
           </div>
