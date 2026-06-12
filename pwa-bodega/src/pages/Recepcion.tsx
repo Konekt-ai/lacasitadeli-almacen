@@ -13,7 +13,7 @@ export default function Recepcion() {
   const [cargando,    setCargando]    = useState(false)
   const [inputManual, setInputManual] = useState('')
   const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([])
-  const [ubicSelec,   setUbicSelec]   = useState<string>('Sin ubicar')
+  const [ubicSelec,   setUbicSelec]   = useState<string>('Bodega')
   const [pedidos,     setPedidos]     = useState<RecepcionEsperada[]>([])
   const [pedidoFolio, setPedidoFolio] = useState<string | null>(null)
   const [cargandoPedidos, setCargandoPedidos] = useState(false)

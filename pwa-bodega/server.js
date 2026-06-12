@@ -124,6 +124,8 @@ async function autoMigrate(db) {
       IF NOT EXISTS (SELECT 1 FROM ubicaciones_bodega WHERE nombre='${nombre}')
         INSERT INTO ubicaciones_bodega (nombre,color,orden) VALUES ('${nombre}','${color}',${orden})`)
   }
+  // 'Bodega' es obligatoria: reactivarla siempre por si alguien la borró
+  await run(`UPDATE ubicaciones_bodega SET activa=1 WHERE nombre='Bodega'`)
   // Renombrar ubicaciones viejas
   await run(`UPDATE ubicaciones_bodega SET nombre='Casita 1',color='#3B82F6',orden=2 WHERE nombre='Tienda Casita 1'`)
   await run(`UPDATE ubicaciones_bodega SET nombre='Casita 2',color='#8B5CF6',orden=3 WHERE nombre='Tienda Casita 2'`)
@@ -178,6 +180,12 @@ async function autoMigrate(db) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+// 'Sin ubicar' / vacío / NULL siempre cuentan como 'Bodega' (evita stock huérfano)
+function normUbic(u) {
+  const v = (u ?? '').toString().trim()
+  return (!v || v === 'Sin ubicar') ? 'Bodega' : v
+}
+
 const _opsEnCurso = new Map()
 function adquirirLock(codigo, tipo) {
   const key = `${codigo}:${tipo}`
@@ -319,7 +327,7 @@ app.get('/api/almacen/producto/:codigo', async (req, res) => {
 // ── POST /api/almacen/entrada ──────────────────────────────────────────────────
 app.post('/api/almacen/entrada', async (req, res) => {
   const { codigo, cantidad, ubicacion = 'Bodega' } = req.body
-  const ubic = ubicacion || 'Bodega'
+  const ubic = normUbic(ubicacion)
   if (!codigo || !cantidad || cantidad <= 0)
     return res.status(400).json({ mensaje: 'Datos inválidos' })
   try {
@@ -376,7 +384,7 @@ app.post('/api/almacen/producto-nuevo', async (req, res) => {
           piezas_por_caja = 1, proveedor = null } = req.body
   const codigo = String(codigo_barras || '').trim()
   const nombre = String(descripcion || '').trim()
-  const ubic   = ubicacion || 'Bodega'
+  const ubic   = normUbic(ubicacion)
   const qty    = parseInt(cantidad, 10)
   if (!codigo || nombre.length < 2 || !qty || qty <= 0)
     return res.status(400).json({ mensaje: 'Datos inválidos: falta código, descripción o cantidad' })
@@ -458,7 +466,7 @@ async function registrarPendienteAdmin({ codigo, nombre, qty, piezas_por_caja, p
 // ── POST /api/almacen/salida ───────────────────────────────────────────────────
 app.post('/api/almacen/salida', async (req, res) => {
   const { codigo, cantidad, ubicacion } = req.body
-  const ubic = ubicacion || 'Bodega'
+  const ubic = normUbic(ubicacion)
   if (!codigo || !cantidad || cantidad <= 0)
     return res.status(400).json({ mensaje: 'Datos inválidos' })
   try {
@@ -533,7 +541,7 @@ async function doSalida(db, codigo, cantidad, ubic, stockEnUbic, res) {
 // ── POST /api/almacen/merma ────────────────────────────────────────────────────
 app.post('/api/almacen/merma', async (req, res) => {
   const { codigo, cantidad, motivo, ubicacion = 'Bodega', notas } = req.body
-  const ubic = ubicacion || 'Bodega'
+  const ubic = normUbic(ubicacion)
   if (!codigo || !cantidad || cantidad <= 0)
     return res.status(400).json({ mensaje: 'Datos inválidos' })
   try {
@@ -657,8 +665,11 @@ app.get('/api/almacen/buscar', async (req, res) => {
 
     const products = result.recordset
 
-    // 2. Desglose por ubicación — busca por ambos códigos
-    const locMap = {}
+    // 2. Desglose por ubicación — AGREGADO por ubicación y consistente con el total.
+    //    Una misma fila puede pertenecer a varios productos que comparten código
+    //    (GTIN/alterno); cada producto suma sus filas por ubicación, y su total es
+    //    exactamente la suma de esos chips (chips y total SIEMPRE cuadran).
+    const locByProd = {}  // codigo -> { ubicacion -> {ubicacion,cantidad,color} }
     if (products.length > 0) try {
       const allCodes = new Set()
       for (const p of products) {
@@ -670,24 +681,23 @@ app.get('/api/almacen/buscar', async (req, res) => {
                i.cantidad, ISNULL(u.color,'#6B7280') AS color
         FROM ${INV} i
         LEFT JOIN ${UBIC} u ON u.nombre=ISNULL(i.ubicacion,'Bodega') AND u.activa=1
-        WHERE i.codigo_barras IN (${[...allCodes].join(',')}) AND i.cantidad>0
-        ORDER BY i.codigo_barras, i.cantidad DESC`)
+        WHERE i.codigo_barras IN (${[...allCodes].join(',')}) AND i.cantidad>0`)
       for (const row of locResult.recordset) {
-        // Asociar la fila al producto que tenga ese código (GTIN o alterno)
-        const prod = products.find(p => p.codigo === row.codigo_barras || p.codigo_alt === row.codigo_barras)
-        if (prod) {
-          if (!locMap[prod.codigo]) locMap[prod.codigo] = []
-          locMap[prod.codigo].push({ ubicacion: row.ubicacion, cantidad: row.cantidad, color: row.color })
+        for (const p of products) {
+          if (p.codigo !== row.codigo_barras && p.codigo_alt !== row.codigo_barras) continue
+          if (!locByProd[p.codigo]) locByProd[p.codigo] = {}
+          const m = locByProd[p.codigo]
+          if (!m[row.ubicacion]) m[row.ubicacion] = { ubicacion: row.ubicacion, cantidad: 0, color: row.color }
+          m[row.ubicacion].cantidad += row.cantidad
         }
       }
     } catch {}
 
-    const fromVista = products.map(p => ({
-      codigo:            p.codigo,
-      nombre:            p.nombre,
-      stock:             p.stock,
-      stockPorUbicacion: locMap[p.codigo] ?? [],
-    }))
+    const fromVista = products.map(p => {
+      const locs = Object.values(locByProd[p.codigo] ?? {}).sort((a, b) => b.cantidad - a.cantidad)
+      const stock = locs.reduce((s, l) => s + l.cantidad, 0)
+      return { codigo: p.codigo, nombre: p.nombre, stock, stockPorUbicacion: locs }
+    })
 
     // 3. Productos NUEVOS: registrados en la bodega con nombre propio y que aún
     //    NO existen en NovaCaja. Se incluyen para que sean buscables/visibles.
@@ -987,17 +997,10 @@ app.post('/api/almacen/ubicaciones/areas', async (req, res) => {
   } catch (err) { res.status(500).json({ mensaje: err.message }) }
 })
 
-app.delete('/api/almacen/ubicaciones/areas/:id', async (req, res) => {
-  const id = parseInt(req.params.id, 10)
-  if (isNaN(id)) return res.status(400).json({ mensaje: 'ID inválido' })
-  try {
-    const db = await getPool()
-    await db.request().input('id', sql.Int, id)
-      .query(`UPDATE ${UBIC} SET activa=0 WHERE id=@id`)
-    const r = await db.request()
-      .query(`SELECT id,nombre,color FROM ${UBIC} WHERE activa=1 ORDER BY orden,nombre`)
-    res.json(r.recordset)
-  } catch (err) { res.status(500).json({ mensaje: err.message }) }
+// Borrar ubicaciones quedó DESHABILITADO: borrar áreas (p.ej. 'Bodega') causaba
+// que el stock cayera en 'Sin ubicar' y se descuadrara el inventario.
+app.delete('/api/almacen/ubicaciones/areas/:id', async (_req, res) => {
+  return res.status(403).json({ mensaje: 'Borrar ubicaciones está deshabilitado' })
 })
 
 // ── GET /api/almacen/inventario — todo el stock por producto y ubicación ───────

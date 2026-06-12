@@ -32,18 +32,6 @@ export default function GestionUbicaciones({ onClose }: { onClose: () => void })
     }
   }
 
-  async function eliminar(id: number) {
-    setCargando(true)
-    try {
-      const data = await api.eliminarUbicacion(id)
-      setUbicaciones(data)
-    } catch (e) {
-      setError((e as Error).message)
-    } finally {
-      setCargando(false)
-    }
-  }
-
   return (
     <div style={{
       position: 'fixed', inset: 0, background: '#f5f5f3', zIndex: 200,
@@ -60,7 +48,7 @@ export default function GestionUbicaciones({ onClose }: { onClose: () => void })
         >←</button>
         <div>
           <p style={{ fontSize: 16, fontWeight: 600 }}>Ubicaciones</p>
-          <p style={{ fontSize: 12, opacity: 0.65 }}>Agregar o eliminar categorías</p>
+          <p style={{ fontSize: 12, opacity: 0.65 }}>Agregar categorías</p>
         </div>
       </div>
 
@@ -88,17 +76,6 @@ export default function GestionUbicaciones({ onClose }: { onClose: () => void })
                 }}>
                   <div style={{ width: 18, height: 18, borderRadius: 6, background: u.color, flexShrink: 0 }} />
                   <span style={{ flex: 1, fontSize: 15, fontWeight: 500, color: '#1a1a18' }}>{u.nombre}</span>
-                  <button
-                    onClick={() => eliminar(u.id)}
-                    disabled={cargando}
-                    style={{
-                      background: '#FAECE7', border: 'none', borderRadius: 8,
-                      padding: '6px 12px', cursor: 'pointer', fontSize: 13,
-                      color: '#712B13', fontWeight: 600,
-                    }}
-                  >
-                    Eliminar
-                  </button>
                 </div>
               ))}
             </div>

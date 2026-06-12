@@ -137,7 +137,7 @@ export const api = {
   registrarEntrada: (codigo: string, cantidad: number, nombre?: string, pedidoId?: number | null, ubicacion?: string) =>
     request<MovimientoResponse>('/api/almacen/entrada', {
       method: 'POST',
-      body: JSON.stringify({ codigo, cantidad, nombre, pedido_id: pedidoId ?? null, ubicacion: ubicacion ?? 'Sin ubicar' }),
+      body: JSON.stringify({ codigo, cantidad, nombre, pedido_id: pedidoId ?? null, ubicacion: ubicacion ?? 'Bodega' }),
     }),
 
   // Registra un producto que aún NO existe en NovaCaja: crea su nombre propio en
