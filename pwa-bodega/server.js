@@ -212,7 +212,18 @@ async function getNombre(db, codigo) {
     .query(`SELECT TOP 1 Art_Descripcion AS nombre FROM ${VISTA}
             WHERE Art_GTIN=@codigo OR CodAlt_Codigo=@codigo OR Art_Codigo=@codigo OR Art_PLU=@codigo
             ORDER BY Art_Codigo`)
-  return r.recordset[0]?.nombre ?? null
+  if (r.recordset[0]?.nombre) return r.recordset[0].nombre
+
+  // 3. Último recurso: si el producto YA tiene stock en la bodega aunque sin
+  //    nombre, devolver el código para que se pueda buscar/escanear/sacar.
+  try {
+    const r3 = await db.request()
+      .input('codigo', sql.VarChar(50), codigo)
+      .query(`SELECT TOP 1 codigo_barras FROM ${INV} WHERE codigo_barras=@codigo`)
+    if (r3.recordset[0]) return codigo
+  } catch {}
+
+  return null
 }
 
 async function getStock(db, codigo) {
@@ -608,25 +619,48 @@ async function doMerma(db, codigo, cantidad, ubic, motivo, notas, res) {
 app.get('/api/almacen/movimientos', async (_req, res) => {
   try {
     const db = await getPool()
-    const result = await db.request().query(`
-      SELECT m.id,
-             m.codigo_barras                                          AS codigo,
-             ISNULL(ib.nombre, ISNULL(v.Art_Descripcion, m.codigo_barras)) AS nombre,
-             1                                                        AS es_bodega,
-             m.tipo, m.cantidad,
-             ISNULL(m.stock_antes,0)                    AS stock_antes,
-             ISNULL(m.stock_despues,0)                  AS stock_despues,
-             ''                                         AS usuario,
-             CONVERT(VARCHAR(23),m.fecha,120)            AS fecha,
+    // 1. Movimientos del día (acotado: evita timeouts si hubo un traslado masivo)
+    const movRes = await db.request().query(`
+      SELECT TOP 250 m.id, m.codigo_barras AS codigo, m.tipo, m.cantidad,
+             ISNULL(m.stock_antes,0)          AS stock_antes,
+             ISNULL(m.stock_despues,0)        AS stock_despues,
+             CONVERT(VARCHAR(23),m.fecha,120) AS fecha,
              m.ubicacion
       FROM ${MOV} m
-      OUTER APPLY (SELECT TOP 1 Art_Descripcion FROM ${VISTA}
-                   WHERE Art_GTIN=m.codigo_barras OR CodAlt_Codigo=m.codigo_barras) v
-      OUTER APPLY (SELECT TOP 1 nombre FROM ${INV}
-                   WHERE codigo_barras=m.codigo_barras AND nombre IS NOT NULL AND nombre<>'') ib
       WHERE CAST(m.fecha AS DATE)=CAST(GETDATE() AS DATE)
       ORDER BY m.fecha DESC`)
-    res.json(result.recordset)
+    const movs = movRes.recordset
+    if (movs.length === 0) return res.json([])
+
+    // 2. Resolver nombres EN LOTE (1 consulta a INV + 1 a NovaCaja, no por fila)
+    const codes = [...new Set(movs.map(m => m.codigo))]
+    const inList = codes.map(c => `'${String(c).replace(/'/g, "''")}'`).join(',')
+    const nombreInv = {}, nombreVista = {}
+    try {
+      const r = await db.request().query(`
+        SELECT codigo_barras, MAX(nombre) AS nombre FROM ${INV}
+        WHERE codigo_barras IN (${inList}) AND nombre IS NOT NULL AND nombre<>''
+        GROUP BY codigo_barras`)
+      for (const row of r.recordset) nombreInv[row.codigo_barras] = row.nombre
+    } catch {}
+    try {
+      const r = await db.request().query(`
+        SELECT Art_GTIN, CodAlt_Codigo, Art_Descripcion FROM ${VISTA}
+        WHERE Art_GTIN IN (${inList}) OR CodAlt_Codigo IN (${inList})`)
+      for (const row of r.recordset) {
+        if (row.Art_GTIN)      nombreVista[row.Art_GTIN]      = row.Art_Descripcion
+        if (row.CodAlt_Codigo) nombreVista[row.CodAlt_Codigo] = row.Art_Descripcion
+      }
+    } catch {}
+
+    res.json(movs.map(m => ({
+      id: m.id, codigo: m.codigo,
+      nombre: nombreInv[m.codigo] || nombreVista[m.codigo] || m.codigo,
+      es_bodega: 1,
+      tipo: m.tipo, cantidad: m.cantidad,
+      stock_antes: m.stock_antes, stock_despues: m.stock_despues,
+      usuario: '', fecha: m.fecha, ubicacion: m.ubicacion,
+    })))
   } catch (err) {
     console.error('movimientos:', err.message)
     res.status(500).json({ mensaje: err.message })
@@ -699,8 +733,9 @@ app.get('/api/almacen/buscar', async (req, res) => {
       return { codigo: p.codigo, nombre: p.nombre, stock, stockPorUbicacion: locs }
     })
 
-    // 3. Productos NUEVOS: registrados en la bodega con nombre propio y que aún
-    //    NO existen en NovaCaja. Se incluyen para que sean buscables/visibles.
+    // 3. Productos de la bodega que NO existen en NovaCaja (con o sin nombre).
+    //    Incluye los "sin nombre" (se muestran con su código) para que sí se
+    //    encuentren y luego se les pueda corregir el nombre con 🏷️.
     let nuevos = []
     try {
       const nuevosRes = await db.request()
@@ -710,17 +745,20 @@ app.get('/api/almacen/buscar', async (req, res) => {
                  i.cantidad, ISNULL(u.color,'#6B7280') AS color
           FROM ${INV} i
           LEFT JOIN ${UBIC} u ON u.nombre=ISNULL(i.ubicacion,'Bodega') AND u.activa=1
-          WHERE i.cantidad>0 AND i.nombre IS NOT NULL AND i.nombre<>''
-            AND (i.nombre LIKE @q OR i.codigo_barras LIKE @q)
+          WHERE i.cantidad>0
+            AND (i.codigo_barras LIKE @q OR (i.nombre IS NOT NULL AND i.nombre LIKE @q))
             AND NOT EXISTS (SELECT 1 FROM ${VISTA} v
                             WHERE v.Art_GTIN=i.codigo_barras OR v.CodAlt_Codigo=i.codigo_barras OR v.Art_Codigo=i.codigo_barras)
           ORDER BY i.codigo_barras, i.cantidad DESC`)
       const map = {}
       for (const row of nuevosRes.recordset) {
         if (!map[row.codigo_barras])
-          map[row.codigo_barras] = { codigo: row.codigo_barras, nombre: row.nombre, stock: 0, stockPorUbicacion: [] }
-        map[row.codigo_barras].stock += row.cantidad
-        map[row.codigo_barras].stockPorUbicacion.push({ ubicacion: row.ubicacion, cantidad: row.cantidad, color: row.color })
+          map[row.codigo_barras] = { codigo: row.codigo_barras, nombre: row.nombre || row.codigo_barras, stock: 0, stockPorUbicacion: [] }
+        const m = map[row.codigo_barras]
+        m.stock += row.cantidad
+        const ex = m.stockPorUbicacion.find(x => x.ubicacion === row.ubicacion)
+        if (ex) ex.cantidad += row.cantidad
+        else m.stockPorUbicacion.push({ ubicacion: row.ubicacion, cantidad: row.cantidad, color: row.color })
       }
       nuevos = Object.values(map)
     } catch {}
