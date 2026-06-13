@@ -204,6 +204,14 @@ export const api = {
   eliminarUbicacion: (id: number) =>
     request<Ubicacion[]>(`/api/almacen/ubicaciones/areas/${id}`, { method: 'DELETE' }),
 
+  // Mueve TODO el inventario de un área a otra (corrige áreas creadas por error)
+  moverInventario: (de: string, a: string, eliminarOrigen = true) =>
+    request<{ ok: boolean; productos: number; piezas: number; quitada: boolean; mensaje: string }>(
+      '/api/almacen/ubicaciones/mover', {
+        method: 'POST',
+        body: JSON.stringify({ de, a, eliminarOrigen }),
+      }),
+
   getPedidosAbiertos: () =>
     request<PedidoResumen[]>('/api/almacen/pedidos?estado=activos'),
 

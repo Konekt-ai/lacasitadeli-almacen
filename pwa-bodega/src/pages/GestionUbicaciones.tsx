@@ -12,6 +12,15 @@ export default function GestionUbicaciones({ onClose }: { onClose: () => void })
   const [nuevoColor,   setNuevoColor]   = useState('#3B82F6')
   const [cargando,     setCargando]     = useState(false)
   const [error,        setError]        = useState('')
+  // Mover inventario de un área a otra
+  const [movDe,    setMovDe]    = useState('')
+  const [movA,     setMovA]     = useState('')
+  const [moviendo, setMoviendo] = useState(false)
+  const [aviso,    setAviso]    = useState('')
+
+  async function recargarUbic() {
+    try { setUbicaciones(await api.getUbicaciones()) } catch {}
+  }
 
   useEffect(() => {
     api.getUbicaciones().then(setUbicaciones).catch(e => setError((e as Error).message))
@@ -29,6 +38,22 @@ export default function GestionUbicaciones({ onClose }: { onClose: () => void })
       setError((e as Error).message)
     } finally {
       setCargando(false)
+    }
+  }
+
+  async function moverTodo() {
+    if (!movDe || !movA || movDe === movA || moviendo) return
+    if (!window.confirm(`¿Mover TODO el inventario de "${movDe}" a "${movA}"?\n\nEl área "${movDe}" quedará vacía y se quitará de la lista.`)) return
+    setMoviendo(true); setAviso(''); setError('')
+    try {
+      const r = await api.moverInventario(movDe, movA, true)
+      setAviso(r.mensaje)
+      setMovDe(''); setMovA('')
+      await recargarUbic()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setMoviendo(false)
     }
   }
 
@@ -80,6 +105,56 @@ export default function GestionUbicaciones({ onClose }: { onClose: () => void })
               ))}
             </div>
           )}
+        </div>
+
+        {/* Mover inventario de un área a otra */}
+        <div style={{
+          background: 'white', borderRadius: 16, padding: '18px 16px',
+          border: '1px solid rgba(0,0,0,0.06)',
+        }}>
+          <p style={{ fontSize: 13, fontWeight: 600, color: '#1F2937', marginBottom: 4 }}>Mover inventario</p>
+          <p style={{ fontSize: 12, color: '#aaa', marginBottom: 14 }}>
+            Pasa todo el stock de un área a otra (ej. corregir un área creada por error).
+          </p>
+
+          {aviso && (
+            <p style={{ color: '#085041', fontSize: 13, background: '#E1F5EE', padding: '10px 14px', borderRadius: 10, marginBottom: 12 }}>
+              ✓ {aviso}
+            </p>
+          )}
+
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, marginBottom: 14 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <label style={{ fontSize: 11, color: '#888', fontWeight: 600, display: 'block', marginBottom: 4 }}>De</label>
+              <select value={movDe} onChange={e => setMovDe(e.target.value)}
+                style={{ width: '100%', padding: '11px 10px', fontSize: 14, boxSizing: 'border-box', border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 10, background: '#fafafa', color: '#1a1a18' }}>
+                <option value="">Origen...</option>
+                {ubicaciones.map(u => <option key={u.id} value={u.nombre}>{u.nombre}</option>)}
+              </select>
+            </div>
+            <span style={{ fontSize: 18, color: '#3B82F6', paddingBottom: 8 }}>→</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <label style={{ fontSize: 11, color: '#888', fontWeight: 600, display: 'block', marginBottom: 4 }}>A</label>
+              <select value={movA} onChange={e => setMovA(e.target.value)}
+                style={{ width: '100%', padding: '11px 10px', fontSize: 14, boxSizing: 'border-box', border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 10, background: '#fafafa', color: '#1a1a18' }}>
+                <option value="">Destino...</option>
+                {ubicaciones.filter(u => u.nombre !== movDe).map(u => <option key={u.id} value={u.nombre}>{u.nombre}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <button
+            onClick={moverTodo}
+            disabled={moviendo || !movDe || !movA || movDe === movA}
+            style={{
+              width: '100%', padding: '13px', border: 'none', borderRadius: 12,
+              background: '#3B82F6', color: 'white', fontSize: 14, fontWeight: 700,
+              cursor: (!movDe || !movA || movDe === movA) ? 'default' : 'pointer',
+              opacity: (moviendo || !movDe || !movA || movDe === movA) ? 0.45 : 1,
+            }}
+          >
+            {moviendo ? 'Moviendo...' : '↔ Mover todo el inventario'}
+          </button>
         </div>
 
         {/* Agregar nueva */}

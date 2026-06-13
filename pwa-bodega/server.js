@@ -1003,6 +1003,61 @@ app.delete('/api/almacen/ubicaciones/areas/:id', async (_req, res) => {
   return res.status(403).json({ mensaje: 'Borrar ubicaciones está deshabilitado' })
 })
 
+// ── POST /api/almacen/ubicaciones/mover — mover TODO el stock de un área a otra ─
+// Sirve para corregir áreas creadas por error (p.ej. 'Bogeda' → 'Bodega').
+const AREAS_FIJAS = ['Bodega', 'Casita 1', 'Casita 2', 'USA', 'Cocina', 'Refrigerador']
+app.post('/api/almacen/ubicaciones/mover', async (req, res) => {
+  const de = String(req.body?.de || '').trim()
+  const a  = normUbic(req.body?.a)
+  const eliminarOrigen = req.body?.eliminarOrigen !== false
+  if (!de || !a)   return res.status(400).json({ mensaje: 'Falta origen o destino' })
+  if (de === a)    return res.status(400).json({ mensaje: 'El origen y el destino deben ser diferentes' })
+  try {
+    const db = await getPool()
+    const cnt = await db.request().input('de', sql.VarChar(50), de)
+      .query(`SELECT COUNT(*) AS productos, ISNULL(SUM(cantidad),0) AS piezas
+              FROM ${INV} WHERE ubicacion=@de AND cantidad>0`)
+    const productos = cnt.recordset[0]?.productos ?? 0
+    const piezas    = cnt.recordset[0]?.piezas ?? 0
+
+    const t = db.transaction()
+    await t.begin()
+    try {
+      // 1. Registrar el traslado de cada producto (para el Historial / trazabilidad)
+      await t.request().input('de', sql.VarChar(50), de).input('a', sql.VarChar(50), a)
+        .query(`INSERT INTO ${MOV}(codigo_barras,tipo,cantidad,ubicacion,area,fecha)
+                SELECT codigo_barras,'traslado',cantidad,@a,@de,GETDATE()
+                FROM ${INV} WHERE ubicacion=@de AND cantidad>0`)
+      // 2. Sumar al destino (junta cantidades si el producto ya existía allá)
+      await t.request().input('de', sql.VarChar(50), de).input('a', sql.VarChar(50), a)
+        .query(`MERGE ${INV} AS tgt
+                USING (SELECT codigo_barras, cantidad, nombre FROM ${INV} WHERE ubicacion=@de AND cantidad>0) AS src
+                  ON tgt.codigo_barras=src.codigo_barras AND tgt.ubicacion=@a
+                WHEN MATCHED THEN
+                  UPDATE SET cantidad=tgt.cantidad+src.cantidad, ultima_entrada=GETDATE(),
+                             nombre=ISNULL(NULLIF(tgt.nombre,''),src.nombre)
+                WHEN NOT MATCHED THEN
+                  INSERT (codigo_barras,ubicacion,cantidad,nombre,ultima_entrada)
+                  VALUES (src.codigo_barras,@a,src.cantidad,src.nombre,GETDATE());`)
+      // 3. Vaciar el origen
+      await t.request().input('de', sql.VarChar(50), de)
+        .query(`DELETE FROM ${INV} WHERE ubicacion=@de`)
+      // 4. Quitar el área de origen si se pidió y NO es una de las fijas
+      const quitada = eliminarOrigen && !AREAS_FIJAS.includes(de)
+      if (quitada) {
+        await t.request().input('de', sql.VarChar(50), de)
+          .query(`UPDATE ${UBIC} SET activa=0 WHERE nombre=@de`)
+      }
+      await t.commit()
+      res.json({ ok: true, productos, piezas, quitada,
+                 mensaje: `Se movieron ${piezas} pzas (${productos} productos) de ${de} a ${a}` })
+    } catch (err) { await t.rollback(); throw err }
+  } catch (err) {
+    console.error('mover ubicacion:', err.message)
+    res.status(500).json({ mensaje: err.message })
+  }
+})
+
 // ── GET /api/almacen/inventario — todo el stock por producto y ubicación ───────
 app.get('/api/almacen/inventario', async (_req, res) => {
   try {
