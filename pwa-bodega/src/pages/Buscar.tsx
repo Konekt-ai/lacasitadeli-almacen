@@ -56,6 +56,40 @@ export default function Buscar() {
     }
   }
 
+  // Vincular el código de la CAJA a un producto (1 caja = N piezas)
+  async function vincularCaja(p: Producto) {
+    const cod = window.prompt(`Escanea o escribe el CÓDIGO DE LA CAJA de:\n${p.nombre}`)
+    if (cod === null) return
+    const codCaja = cod.trim()
+    if (codCaja.length < 4) { alert('Código de caja inválido.'); return }
+    const ppcStr = window.prompt('¿Cuántas piezas trae cada caja? (ej. 12)', String(p.piezas_por_caja && p.piezas_por_caja > 1 ? p.piezas_por_caja : 12))
+    if (ppcStr === null) return
+    const ppc = parseInt(ppcStr, 10)
+    if (!(ppc >= 2)) { alert('Las piezas por caja deben ser 2 o más.'); return }
+    try {
+      setCargando(true)
+      await api.vincularCodigoCaja(p.codigo, codCaja, ppc)
+      await buscar()
+    } catch (e) { alert((e as Error).message); setCargando(false) }
+  }
+
+  // Corregir stock mal contado (lo que se metió como piezas pero eran cajas)
+  async function corregirStock(p: Producto) {
+    const ppcStr = window.prompt(
+      `Reajustar el stock de:\n${p.nombre}\n\nStock actual: ${p.stock}\n\n¿Cuántas piezas trae cada caja? El stock se multiplicará por ese número (ej. ${p.stock} × 12).`,
+      String(p.piezas_por_caja && p.piezas_por_caja > 1 ? p.piezas_por_caja : 12)
+    )
+    if (ppcStr === null) return
+    const factor = parseInt(ppcStr, 10)
+    if (!(factor >= 2)) { alert('El número debe ser 2 o más.'); return }
+    if (!window.confirm(`Se reajustará: ${p.stock} → ${p.stock * factor} piezas.\n¿Confirmas?`)) return
+    try {
+      setCargando(true)
+      await api.reinterpretarStock(p.codigo, factor)
+      await buscar()
+    } catch (e) { alert((e as Error).message); setCargando(false) }
+  }
+
   return (
     <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
 
@@ -131,15 +165,33 @@ export default function Buscar() {
               }}>
                 {/* Info del producto */}
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
                     <p style={{ fontSize: 14, fontWeight: 600, color: '#1a1a18' }}>{r.nombre}</p>
                     <button
                       onClick={() => renombrar(r.codigo, r.nombre)}
                       style={{ background: '#eef6f2', border: '1px solid rgba(29,158,117,0.25)', borderRadius: 6, padding: '2px 6px', cursor: 'pointer', fontSize: 12, flexShrink: 0 }}
                       title="Corregir nombre"
                     >🏷️</button>
+                    <button
+                      onClick={() => vincularCaja(r)}
+                      style={{ background: '#F0F7FF', border: '1px solid rgba(59,130,246,0.25)', borderRadius: 6, padding: '2px 6px', cursor: 'pointer', fontSize: 12, flexShrink: 0 }}
+                      title={(r.piezas_por_caja ?? 1) > 1 ? 'Cambiar código/piezas de la caja' : 'Vincular código de caja'}
+                    >📦</button>
+                    <button
+                      onClick={() => corregirStock(r)}
+                      style={{ background: '#FFF3E0', border: '1px solid rgba(216,90,48,0.25)', borderRadius: 6, padding: '2px 6px', cursor: 'pointer', fontSize: 12, flexShrink: 0 }}
+                      title="Corregir stock mal contado (×piezas por caja)"
+                    >🔧</button>
                   </div>
                   <p style={{ fontSize: 11, color: '#bbb', fontFamily: 'monospace', marginTop: 2 }}>{r.codigo}</p>
+
+                  {/* Desglose en cajas, si el producto tiene caja con N piezas */}
+                  {(r.piezas_por_caja ?? 1) > 1 && r.stock > 0 && (
+                    <p style={{ fontSize: 12, color: '#3B82F6', fontWeight: 600, marginTop: 4 }}>
+                      = {Math.floor(r.stock / r.piezas_por_caja!)} {Math.floor(r.stock / r.piezas_por_caja!) === 1 ? 'caja' : 'cajas'} de {r.piezas_por_caja}
+                      {r.stock % r.piezas_por_caja! > 0 ? ` + ${r.stock % r.piezas_por_caja!} sueltas` : ''}
+                    </p>
+                  )}
 
                   {/* Chips de ubicación con cantidad — visibles siempre */}
                   <div style={{ marginTop: 7, display: 'flex', flexWrap: 'wrap', gap: 5 }}>
@@ -166,7 +218,7 @@ export default function Buscar() {
                   <p style={{ fontSize: 24, fontWeight: 700, color: stockColor(r.stock), lineHeight: 1 }}>
                     {r.stock}
                   </p>
-                  <p style={{ fontSize: 10, color: '#aaa', marginTop: 2 }}>total</p>
+                  <p style={{ fontSize: 10, color: '#aaa', marginTop: 2 }}>pzas</p>
                 </div>
               </div>
             )

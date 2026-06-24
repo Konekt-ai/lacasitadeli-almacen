@@ -66,7 +66,10 @@ export default function Salida() {
 
   async function confirmar() {
     if (!producto || !origen || !destino || registrandoRef.current) return
-    if (cantidad > origen.cantidad) {
+    // Si se escaneó el código de la caja, 'cantidad' son cajas → piezas = cantidad × unidades
+    const unidades = producto.unidades || 1
+    const piezasASacar = cantidad * unidades
+    if (piezasASacar > origen.cantidad) {
       setError(`Solo hay ${origen.cantidad} pzas en ${origen.ubicacion}`)
       setPaso('error')
       beepError()
@@ -75,6 +78,7 @@ export default function Salida() {
     registrandoRef.current = true
     setCargando(true)
     try {
+      // Se manda el código ESCANEADO y la cantidad en su unidad; el backend multiplica.
       await api.trasladar(producto.codigo, cantidad, origen.ubicacion, destino.nombre)
       setPaso('exito')
       beepOk()
@@ -246,16 +250,38 @@ export default function Salida() {
         <p style={{ fontSize: 11, color: '#aaa', marginTop: 8 }}>Disponible en {origen.ubicacion}: {origen.cantidad} pzas</p>
       </div>
 
-      <ContadorCantidad
-        unidad="piezas"
-        color="#D85A30"
-        max={origen.cantidad}
-        onChange={t => setCantidad(t)}
-      />
+      {(producto.unidades || 1) > 1 ? (
+        <>
+          <div style={{ background: '#FFF3E0', border: '1px solid rgba(216,90,48,0.25)', borderRadius: 10, padding: '8px 12px' }}>
+            <p style={{ fontSize: 12, color: '#B45309', fontWeight: 600 }}>
+              📦 Escaneaste el código de CAJA · 1 caja = {producto.unidades} piezas
+            </p>
+          </div>
+          <ContadorCantidad
+            unidad="cajas"
+            color="#D85A30"
+            max={Math.floor(origen.cantidad / (producto.unidades || 1))}
+            onChange={t => setCantidad(t)}
+          />
+          <p style={{ fontSize: 13, color: '#D85A30', textAlign: 'center', fontWeight: 600 }}>
+            = {cantidad * (producto.unidades || 1)} piezas saldrán
+          </p>
+        </>
+      ) : (
+        <ContadorCantidad
+          unidad="piezas"
+          color="#D85A30"
+          max={origen.cantidad}
+          onChange={t => setCantidad(t)}
+        />
+      )}
 
       <button className="btn-primary rojo" onClick={confirmar} disabled={cargando}
         style={{ background: '#D85A30' }}>
-        {cargando ? 'Registrando...' : `📤 Registrar salida · ${cantidad} pzas`}
+        {cargando ? 'Registrando...'
+          : (producto.unidades || 1) > 1
+            ? `📤 Registrar · ${cantidad} ${cantidad === 1 ? 'caja' : 'cajas'} (${cantidad * (producto.unidades || 1)} pzas)`
+            : `📤 Registrar salida · ${cantidad} pzas`}
       </button>
       <button className="btn-secondary" onClick={() => setPaso('elegirDestino')}>← Cambiar destino</button>
     </div>
@@ -266,7 +292,11 @@ export default function Salida() {
     <div style={{ padding: '40px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 12 }}>
       <div style={{ width: 80, height: 80, borderRadius: '50%', background: '#FAECE7', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 36, marginBottom: 8 }}>✓</div>
       <p style={{ fontSize: 20, fontWeight: 700, color: '#712B13' }}>Salida registrada</p>
-      <p style={{ fontSize: 15, color: '#5F5E5A' }}>{cantidad} pzas · {producto.nombre}</p>
+      <p style={{ fontSize: 15, color: '#5F5E5A' }}>
+        {(producto.unidades || 1) > 1
+          ? `${cantidad} ${cantidad === 1 ? 'caja' : 'cajas'} (${cantidad * (producto.unidades || 1)} pzas)`
+          : `${cantidad} pzas`} · {producto.nombre}
+      </p>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
         <span style={{ fontSize: 12, padding: '4px 12px', borderRadius: 20, background: `${origen.color}15`, color: origen.color, fontWeight: 600 }}>
           {origen.ubicacion}

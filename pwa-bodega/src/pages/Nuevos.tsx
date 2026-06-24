@@ -24,6 +24,7 @@ export default function Nuevos() {
   const [fProv,       setFProv]       = useState('')
   const [fPpc,        setFPpc]        = useState('1')
   const [fCodigo,     setFCodigo]     = useState('')
+  const [fCodCaja,    setFCodCaja]    = useState('')
   const [fCantidad,   setFCantidad]   = useState(0)
   const [fUbic,       setFUbic]       = useState('Bodega')
   const [avisoExiste, setAvisoExiste] = useState('')
@@ -47,11 +48,18 @@ export default function Nuevos() {
     }).catch(() => {})
   }, [])
 
+  // A qué campo va el código escaneado en el alta (individual o caja)
+  const [scanTarget, setScanTarget] = useState<'individual' | 'caja'>('individual')
+
   // Escaneo: llena el código del pendiente en resolución, o del producto nuevo.
   const onScan = useCallback((cod: string) => {
     if (resolviendo) { setCodigo(cod); beepScan() }
-    else if (modoCrear) { setFCodigo(cod); beepScan() }
-  }, [resolviendo, modoCrear])
+    else if (modoCrear) {
+      if (scanTarget === 'caja') setFCodCaja(cod)
+      else { setFCodigo(cod); verificarCodigo(cod) }
+      beepScan()
+    }
+  }, [resolviendo, modoCrear, scanTarget])
   useBarcodeScan(onScan)
 
   // Aviso si el código ya existe en NovaCaja (mejor usar Entrada en ese caso).
@@ -87,15 +95,18 @@ export default function Nuevos() {
 
   function cerrarCrear() {
     setModoCrear(false)
-    setFDesc(''); setFProv(''); setFPpc('1'); setFCodigo(''); setFCantidad(0); setAvisoExiste('')
+    setFDesc(''); setFProv(''); setFPpc('1'); setFCodigo(''); setFCodCaja(''); setFCantidad(0); setAvisoExiste('')
+    setScanTarget('individual')
     if (ubicaciones.length > 0) setFUbic(ubicaciones[0].nombre)
   }
 
   async function crear() {
     const desc = fDesc.trim()
     const cod  = fCodigo.trim()
+    const codCaja = fCodCaja.trim()
     if (desc.length < 3) { notify('Escribe la descripción'); beepError(); return }
     if (/^[\d\s.-]+$/.test(desc)) { notify('El nombre no puede ser solo números (eso es un código)'); beepError(); return }
+    if (codCaja && codCaja === cod) { notify('El código de la caja debe ser diferente al individual'); beepError(); return }
     if (desc === cod)    { notify('El nombre no puede ser el código. Escribe el nombre real.'); beepError(); return }
     if (cod.length < 4)  { notify('Escanea o escribe el código de barras'); beepError(); return }
     // Solo nombre y código son obligatorios; la cantidad y lo demás es opcional.
@@ -103,6 +114,7 @@ export default function Nuevos() {
     try {
       await api.crearProductoNuevo({
         codigo_barras: cod,
+        codigo_caja: codCaja || undefined,
         descripcion: desc,
         cantidad: fCantidad,
         ubicacion: fUbic,
@@ -110,7 +122,7 @@ export default function Nuevos() {
         proveedor: fProv.trim() || null,
       })
       beepOk()
-      notify(`Registrado · +${fCantidad} pzas en ${fUbic}`)
+      notify(fCantidad > 0 ? `Registrado · +${fCantidad} pzas en ${fUbic}` : 'Producto registrado')
       cerrarCrear()
       cargar()
     } catch (e) { notify((e as Error).message); beepError() }
@@ -153,14 +165,27 @@ export default function Nuevos() {
           </div>
 
           <div>
-            <label style={labelStyle}>Código de barras * (escanea o escribe)</label>
+            <label style={labelStyle}>Código del producto INDIVIDUAL * (escanea o escribe)</label>
             <input data-manual="true" value={fCodigo}
+              onFocus={() => setScanTarget('individual')}
               onChange={e => { setFCodigo(e.target.value); verificarCodigo(e.target.value) }}
-              placeholder="Apunta el lector o escribe el código"
+              placeholder="Escanea la pieza suelta"
               style={{ ...inputStyle, fontFamily: 'monospace' }} />
             {avisoExiste && (
               <p style={{ fontSize: 12, color: '#C05621', fontWeight: 600, marginTop: 6 }}>⚠️ {avisoExiste}</p>
             )}
+          </div>
+
+          <div style={{ background: '#F0F7FF', border: '1px solid rgba(59,130,246,0.2)', borderRadius: 10, padding: 12 }}>
+            <label style={labelStyle}>Código de la CAJA (opcional)</label>
+            <input data-manual="true" value={fCodCaja}
+              onFocus={() => setScanTarget('caja')}
+              onChange={e => setFCodCaja(e.target.value)}
+              placeholder="Escanea la caja completa"
+              style={{ ...inputStyle, fontFamily: 'monospace' }} />
+            <p style={{ fontSize: 11, color: '#3B82F6', marginTop: 6 }}>
+              Si lo agregas, al escanear la caja el sistema contará {parseInt(fPpc) > 1 ? `${parseInt(fPpc)} piezas` : 'las piezas que pongas abajo'} por caja.
+            </p>
           </div>
 
           <div style={{ display: 'flex', gap: 10 }}>

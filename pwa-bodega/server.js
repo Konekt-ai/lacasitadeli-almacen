@@ -27,6 +27,8 @@ const sqlConfig = {
   password: process.env.MSSQL_PASSWORD ?? 'compucaja',
   port:     parseInt(process.env.MSSQL_PORT ?? '1433'),
   options:  { encrypt: false, trustServerCertificate: true },
+  connectionTimeout: 15000,
+  requestTimeout:    30000,
   pool:     { max: 10, min: 0, idleTimeoutMillis: 30000 },
 }
 
@@ -175,6 +177,34 @@ async function autoMigrate(db) {
       ALTER TABLE inventario_bodega ADD CONSTRAINT UQ_inv_codigo_ubicacion UNIQUE (codigo_barras,ubicacion)
     END`)
 
+  // 9. Tabla de códigos: relaciona códigos (caja e individual) al MISMO producto.
+  //    El stock vive SIEMPRE en piezas bajo codigo_base (el individual). Un código
+  //    de caja apunta al mismo codigo_base con unidades = piezas por caja.
+  await run(`
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='codigos_producto' AND xtype='U')
+    CREATE TABLE codigos_producto (
+      id          INT           IDENTITY(1,1) PRIMARY KEY,
+      codigo      VARCHAR(50)   NOT NULL,
+      codigo_base VARCHAR(50)   NOT NULL,
+      unidades    INT           NOT NULL DEFAULT 1,
+      tipo        VARCHAR(12)   NOT NULL DEFAULT 'individual',
+      nombre      VARCHAR(200)  NULL,
+      creado      DATETIME      NOT NULL DEFAULT GETDATE()
+    )`)
+  await run(`
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID('codigos_producto') AND name='UQ_codprod_codigo')
+      ALTER TABLE codigos_producto ADD CONSTRAINT UQ_codprod_codigo UNIQUE (codigo)`)
+  await run(`
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID('codigos_producto') AND name='IX_codprod_base')
+      CREATE INDEX IX_codprod_base ON codigos_producto (codigo_base)`)
+  // Backfill seguro (NO cambia stock): cada codigo en inventario_bodega que aún no
+  // tenga fila se registra como su propia base individual (unidades=1).
+  await run(`
+    INSERT INTO codigos_producto (codigo, codigo_base, unidades, tipo)
+    SELECT DISTINCT i.codigo_barras, i.codigo_barras, 1, 'individual'
+    FROM inventario_bodega i
+    WHERE NOT EXISTS (SELECT 1 FROM codigos_producto c WHERE c.codigo = i.codigo_barras)`)
+
   migrated = true
   console.log(' Migración automática completada')
 }
@@ -204,6 +234,16 @@ async function getNombre(db, codigo) {
       .query(`SELECT TOP 1 nombre FROM ${INV}
               WHERE codigo_barras=@codigo AND nombre IS NOT NULL AND nombre<>''`)
     if (r2.recordset[0]?.nombre) return r2.recordset[0].nombre
+  } catch {}
+
+  // 1b. Nombre guardado en la relación de códigos (caja/individual). Esto permite
+  //     escanear el código de la CAJA aunque el stock viva bajo el individual.
+  try {
+    const rc = await db.request()
+      .input('codigo', sql.VarChar(50), codigo)
+      .query(`SELECT TOP 1 nombre FROM ${COD}
+              WHERE (codigo=@codigo OR codigo_base=@codigo) AND nombre IS NOT NULL AND nombre<>''`)
+    if (rc.recordset[0]?.nombre) return rc.recordset[0].nombre
   } catch {}
 
   // 2. Nombre del catálogo de NovaCaja
@@ -316,19 +356,71 @@ async function getCodigoReal(db, codigo) {
   return codigo
 }
 
+const COD = '[compucaja].[dbo].[codigos_producto]'
+
+// Resuelve cualquier código escaneado a su producto base + cuántas piezas
+// representa. Si no hay relación registrada, se comporta como hoy (1 = 1).
+async function resolverCodigo(db, codigo) {
+  try {
+    const r = await db.request()
+      .input('codigo', sql.VarChar(50), codigo)
+      .query(`SELECT TOP 1 codigo_base, unidades, tipo FROM ${COD} WHERE codigo=@codigo`)
+    const row = r.recordset[0]
+    if (row) return { codigo_base: row.codigo_base, unidades: Math.max(1, row.unidades || 1), tipo: row.tipo || 'individual' }
+  } catch {}
+  // Sin relación: el código es su propia base, 1 pieza (comportamiento actual)
+  const base = await getCodigoReal(db, codigo)
+  return { codigo_base: base, unidades: 1, tipo: 'individual' }
+}
+
+// Devuelve las piezas por caja de un producto base (si tiene un código-caja).
+async function getPiezasPorCaja(db, codigoBase) {
+  try {
+    const r = await db.request()
+      .input('base', sql.VarChar(50), codigoBase)
+      .query(`SELECT TOP 1 unidades FROM ${COD}
+              WHERE codigo_base=@base AND tipo='caja' AND unidades>1
+              ORDER BY unidades DESC`)
+    return r.recordset[0]?.unidades ?? 1
+  } catch { return 1 }
+}
+
+// Registra/actualiza un código (caja o individual) apuntando a su producto base.
+async function upsertCodigo(reqOrTx, { codigo, codigo_base, unidades, tipo, nombre = null }) {
+  await reqOrTx.request()
+    .input('codigo',   sql.VarChar(50),  codigo)
+    .input('base',     sql.VarChar(50),  codigo_base)
+    .input('unidades', sql.Int,          unidades)
+    .input('tipo',     sql.VarChar(12),  tipo)
+    .input('nombre',   sql.VarChar(200), nombre)
+    .query(`
+      MERGE ${COD} AS t
+      USING (SELECT @codigo AS codigo) AS s ON t.codigo = s.codigo
+      WHEN MATCHED THEN UPDATE SET codigo_base=@base, unidades=@unidades, tipo=@tipo,
+                                   nombre=ISNULL(@nombre, t.nombre)
+      WHEN NOT MATCHED THEN INSERT (codigo, codigo_base, unidades, tipo, nombre)
+        VALUES (@codigo, @base, @unidades, @tipo, @nombre);`)
+}
+
 // ── GET /api/almacen/producto/:codigo ─────────────────────────────────────────
 app.get('/api/almacen/producto/:codigo', async (req, res) => {
   try {
     const db = await getPool()
-    const nombre = await getNombre(db, req.params.codigo)
+    // Resolver el código escaneado a su producto base + cuántas piezas representa
+    const { codigo_base, unidades, tipo } = await resolverCodigo(db, req.params.codigo)
+    const nombre = await getNombre(db, codigo_base)
     if (!nombre) return res.status(404).json({ mensaje: 'Producto no encontrado' })
-    // Usar el código real almacenado en inventario_bodega para encontrar el stock
-    const codigoReal = await getCodigoReal(db, req.params.codigo)
-    const [stock, stockPorUbicacion] = await Promise.all([
-      getStock(db, codigoReal),
-      getStockPorUbicacion(db, codigoReal),
+    const [stock, stockPorUbicacion, piezasPorCaja] = await Promise.all([
+      getStock(db, codigo_base),
+      getStockPorUbicacion(db, codigo_base),
+      getPiezasPorCaja(db, codigo_base),
     ])
-    res.json({ codigo: req.params.codigo, nombre, stock, stockPorUbicacion })
+    res.json({
+      codigo: req.params.codigo,   // el código ESCANEADO (las escrituras lo re-resuelven)
+      codigo_base, nombre, stock, stockPorUbicacion,
+      tipo, unidades,              // del código escaneado (caja => unidades>1)
+      piezas_por_caja: piezasPorCaja,
+    })
   } catch (err) {
     console.error('getProducto:', err.message)
     res.status(500).json({ mensaje: err.message })
@@ -343,21 +435,25 @@ app.post('/api/almacen/entrada', async (req, res) => {
     return res.status(400).json({ mensaje: 'Datos inválidos' })
   try {
     const db = await getPool()
-    const nombre = await getNombre(db, codigo)
+    // Resolver el código escaneado → producto base + piezas que representa.
+    // Si escanean el código de la caja, 'cantidad' son cajas y se multiplica.
+    const { codigo_base, unidades } = await resolverCodigo(db, codigo)
+    const piezas = cantidad * unidades
+    const nombre = await getNombre(db, codigo_base)
     if (!nombre) return res.status(404).json({ mensaje: 'Producto no encontrado' })
 
-    if (!adquirirLock(codigo, `entrada:${ubic}`))
-      return res.json({ ok: true, stockActual: await getStock(db, codigo), mensaje: 'Entrada registrada' })
+    if (!adquirirLock(codigo_base, `entrada:${ubic}`))
+      return res.json({ ok: true, stockActual: await getStock(db, codigo_base), mensaje: 'Entrada registrada' })
 
-    const stockAntes   = await getStock(db, codigo)
-    const stockDespues = stockAntes + cantidad
+    const stockAntes   = await getStock(db, codigo_base)
+    const stockDespues = stockAntes + piezas
 
     const t = db.transaction()
     await t.begin()
     try {
       await t.request()
-        .input('codigo',    sql.VarChar(50), codigo)
-        .input('cantidad',  sql.Int,         cantidad)
+        .input('codigo',    sql.VarChar(50), codigo_base)
+        .input('cantidad',  sql.Int,         piezas)
         .input('ubicacion', sql.VarChar(50), ubic)
         .query(`
           MERGE ${INV} AS target
@@ -369,8 +465,8 @@ app.post('/api/almacen/entrada', async (req, res) => {
             INSERT (codigo_barras,ubicacion,cantidad,ultima_entrada)
             VALUES (@codigo,@ubicacion,@cantidad,GETDATE());`)
       await t.request()
-        .input('codigo',       sql.VarChar(50), codigo)
-        .input('cantidad',     sql.Int,         cantidad)
+        .input('codigo',       sql.VarChar(50), codigo_base)
+        .input('cantidad',     sql.Int,         piezas)
         .input('ubicacion',    sql.VarChar(50), ubic)
         .input('stockAntes',   sql.Int,         stockAntes)
         .input('stockDespues', sql.Int,         stockDespues)
@@ -391,16 +487,24 @@ app.post('/api/almacen/entrada', async (req, res) => {
 // inventario_bodega y suma stock al instante (aparece en Inventario e Historial).
 // El alta en NovaCaja y el precio los pone el admin después; esto no los espera.
 app.post('/api/almacen/producto-nuevo', async (req, res) => {
-  const { codigo_barras, descripcion, cantidad, ubicacion = 'Bodega',
+  const { codigo_barras, codigo_caja, descripcion, cantidad, ubicacion = 'Bodega',
           piezas_por_caja = 1, proveedor = null } = req.body
-  const codigo = String(codigo_barras || '').trim()
+  const codigo   = String(codigo_barras || '').trim()        // código individual = base
+  const codCaja  = String(codigo_caja || '').trim()          // código de la caja (opcional)
+  const ppc      = Math.max(1, parseInt(piezas_por_caja) || 1)
   const nombre = String(descripcion || '').trim()
   const ubic   = normUbic(ubicacion)
-  const qty    = parseInt(cantidad, 10)
-  if (!codigo || nombre.length < 2 || !qty || qty <= 0)
-    return res.status(400).json({ mensaje: 'Datos inválidos: falta código, descripción o cantidad' })
+  const qty    = parseInt(cantidad, 10) || 0   // cantidad inicial es OPCIONAL
+  if (!codigo || nombre.length < 2)
+    return res.status(400).json({ mensaje: 'Datos inválidos: falta código o descripción' })
+  if (codCaja && codCaja === codigo)
+    return res.status(400).json({ mensaje: 'El código de la caja y el individual deben ser diferentes' })
   try {
     const db = await getPool()
+
+    // Registrar la relación de códigos (individual = base; caja = N piezas)
+    await upsertCodigo(db, { codigo, codigo_base: codigo, unidades: 1, tipo: 'individual', nombre })
+    if (codCaja) await upsertCodigo(db, { codigo: codCaja, codigo_base: codigo, unidades: ppc, tipo: 'caja', nombre })
 
     if (!adquirirLock(codigo, `nuevo:${ubic}`))
       return res.json({ ok: true, stockActual: await getStock(db, codigo), mensaje: 'Producto registrado' })
@@ -411,6 +515,8 @@ app.post('/api/almacen/producto-nuevo', async (req, res) => {
     const t = db.transaction()
     await t.begin()
     try {
+      // Suma stock (qty>0) o crea fila con cantidad 0 para que el producto exista
+      // y sea buscable, guardando su nombre.
       await t.request()
         .input('codigo',    sql.VarChar(50),  codigo)
         .input('cantidad',  sql.Int,          qty)
@@ -426,14 +532,16 @@ app.post('/api/almacen/producto-nuevo', async (req, res) => {
           WHEN NOT MATCHED THEN
             INSERT (codigo_barras,ubicacion,cantidad,nombre,ultima_entrada)
             VALUES (@codigo,@ubicacion,@cantidad,@nombre,GETDATE());`)
-      await t.request()
-        .input('codigo',       sql.VarChar(50), codigo)
-        .input('cantidad',     sql.Int,         qty)
-        .input('ubicacion',    sql.VarChar(50), ubic)
-        .input('stockAntes',   sql.Int,         stockAntes)
-        .input('stockDespues', sql.Int,         stockDespues)
-        .query(`INSERT INTO ${MOV}(codigo_barras,tipo,cantidad,ubicacion,stock_antes,stock_despues,fecha)
-                VALUES(@codigo,'entrada',@cantidad,@ubicacion,@stockAntes,@stockDespues,GETDATE())`)
+      if (qty > 0) {
+        await t.request()
+          .input('codigo',       sql.VarChar(50), codigo)
+          .input('cantidad',     sql.Int,         qty)
+          .input('ubicacion',    sql.VarChar(50), ubic)
+          .input('stockAntes',   sql.Int,         stockAntes)
+          .input('stockDespues', sql.Int,         stockDespues)
+          .query(`INSERT INTO ${MOV}(codigo_barras,tipo,cantidad,ubicacion,stock_antes,stock_despues,fecha)
+                  VALUES(@codigo,'entrada',@cantidad,@ubicacion,@stockAntes,@stockDespues,GETDATE())`)
+      }
       await t.commit()
     } catch (err) { await t.rollback(); throw err }
 
@@ -482,36 +590,39 @@ app.post('/api/almacen/salida', async (req, res) => {
     return res.status(400).json({ mensaje: 'Datos inválidos' })
   try {
     const db = await getPool()
-    const nombre = await getNombre(db, codigo)
+    // Resolver código escaneado → base + piezas (si es código de caja, multiplica)
+    const { codigo_base, unidades } = await resolverCodigo(db, codigo)
+    const piezas = cantidad * unidades
+    const nombre = await getNombre(db, codigo_base)
     if (!nombre) return res.status(404).json({ mensaje: 'Producto no encontrado' })
 
-    if (!adquirirLock(codigo, `salida:${ubic}`))
-      return res.json({ ok: true, stockActual: await getStock(db, codigo), mensaje: 'Salida registrada' })
+    if (!adquirirLock(codigo_base, `salida:${ubic}`))
+      return res.json({ ok: true, stockActual: await getStock(db, codigo_base), mensaje: 'Salida registrada' })
 
-    // Verificar stock en la ubicación especificada
-    let stockEnUbic = await getStockEnUbic(db, codigo, ubic)
+    // Verificar stock en la ubicación especificada (en piezas)
+    let stockEnUbic = await getStockEnUbic(db, codigo_base, ubic)
 
     // Si no hay stock en esa ubicación, buscar en la primera que tenga suficiente
-    if (stockEnUbic < cantidad) {
-      const stockTotal = await getStock(db, codigo)
-      if (stockTotal < cantidad)
+    if (stockEnUbic < piezas) {
+      const stockTotal = await getStock(db, codigo_base)
+      if (stockTotal < piezas)
         return res.status(400).json({ mensaje: `Stock insuficiente. Total disponible: ${stockTotal} pzas` })
 
       // Tomar de la ubicación con más stock
       const r = await db.request()
-        .input('codigo', sql.VarChar(50), codigo)
+        .input('codigo', sql.VarChar(50), codigo_base)
         .query(`SELECT TOP 1 ubicacion, cantidad FROM ${INV}
                 WHERE codigo_barras=@codigo AND cantidad>0
                 ORDER BY cantidad DESC`)
-      if (!r.recordset[0] || r.recordset[0].cantidad < cantidad)
+      if (!r.recordset[0] || r.recordset[0].cantidad < piezas)
         return res.status(400).json({ mensaje: `Stock insuficiente en ${ubic}. Disponible: ${stockEnUbic} pzas` })
 
       const ubicReal = r.recordset[0].ubicacion
       stockEnUbic = r.recordset[0].cantidad
-      return doSalida(db, codigo, cantidad, ubicReal, stockEnUbic, res)
+      return doSalida(db, codigo_base, piezas, ubicReal, stockEnUbic, res)
     }
 
-    return doSalida(db, codigo, cantidad, ubic, stockEnUbic, res)
+    return doSalida(db, codigo_base, piezas, ubic, stockEnUbic, res)
   } catch (err) {
     console.error('salida:', err.message)
     res.status(500).json({ mensaje: err.message })
@@ -557,27 +668,29 @@ app.post('/api/almacen/merma', async (req, res) => {
     return res.status(400).json({ mensaje: 'Datos inválidos' })
   try {
     const db = await getPool()
-    const nombre = await getNombre(db, codigo)
+    const { codigo_base, unidades } = await resolverCodigo(db, codigo)
+    const piezas = cantidad * unidades
+    const nombre = await getNombre(db, codigo_base)
     if (!nombre) return res.status(404).json({ mensaje: 'Producto no encontrado' })
 
-    if (!adquirirLock(codigo, `merma:${ubic}`))
-      return res.json({ ok: true, stockActual: await getStock(db, codigo), mensaje: 'Merma registrada' })
+    if (!adquirirLock(codigo_base, `merma:${ubic}`))
+      return res.json({ ok: true, stockActual: await getStock(db, codigo_base), mensaje: 'Merma registrada' })
 
-    let stockEnUbic = await getStockEnUbic(db, codigo, ubic)
-    if (stockEnUbic < cantidad) {
+    let stockEnUbic = await getStockEnUbic(db, codigo_base, ubic)
+    if (stockEnUbic < piezas) {
       // Fallback: usar la ubicación con más stock
       const r = await db.request()
-        .input('codigo', sql.VarChar(50), codigo)
+        .input('codigo', sql.VarChar(50), codigo_base)
         .query(`SELECT TOP 1 ubicacion, cantidad FROM ${INV}
-                WHERE codigo_barras=@codigo AND cantidad>=0
+                WHERE codigo_barras=@codigo AND cantidad>0
                 ORDER BY cantidad DESC`)
       const alt = r.recordset[0]
-      if (!alt || alt.cantidad < cantidad)
-        return res.status(400).json({ mensaje: `Stock insuficiente. Disponible: ${await getStock(db, codigo)} pzas` })
+      if (!alt || alt.cantidad < piezas)
+        return res.status(400).json({ mensaje: `Stock insuficiente. Disponible: ${await getStock(db, codigo_base)} pzas` })
       stockEnUbic = alt.cantidad
-      return doMerma(db, codigo, cantidad, alt.ubicacion, motivo, notas, res)
+      return doMerma(db, codigo_base, piezas, alt.ubicacion, motivo, notas, res)
     }
-    return doMerma(db, codigo, cantidad, ubic, motivo, notas, res)
+    return doMerma(db, codigo_base, piezas, ubic, motivo, notas, res)
   } catch (err) {
     console.error('merma:', err.message)
     res.status(500).json({ mensaje: err.message })
@@ -763,7 +876,27 @@ app.get('/api/almacen/buscar', async (req, res) => {
       nuevos = Object.values(map)
     } catch {}
 
-    res.json([...fromVista, ...nuevos])
+    // 4. Adjuntar piezas_por_caja (tamaño de la caja) a cada producto, para que el
+    //    front muestre "= X cajas + Y sueltas". Se busca por el código del producto.
+    const todos = [...fromVista, ...nuevos]
+    try {
+      const cods = new Set()
+      for (const p of todos) {
+        if (p.codigo)     cods.add(`'${String(p.codigo).replace(/'/g, "''")}'`)
+        if (p.codigo_alt) cods.add(`'${String(p.codigo_alt).replace(/'/g, "''")}'`)
+      }
+      if (cods.size > 0) {
+        const r = await db.request().query(`
+          SELECT codigo_base, MAX(unidades) AS ppc FROM ${COD}
+          WHERE tipo='caja' AND unidades>1 AND codigo_base IN (${[...cods].join(',')})
+          GROUP BY codigo_base`)
+        const ppcMap = {}
+        for (const row of r.recordset) ppcMap[row.codigo_base] = row.ppc
+        for (const p of todos) p.piezas_por_caja = ppcMap[p.codigo] || ppcMap[p.codigo_alt] || 1
+      }
+    } catch {}
+
+    res.json(todos)
   } catch (err) {
     console.error('buscar:', err.message)
     res.status(500).json({ mensaje: err.message })
@@ -779,22 +912,24 @@ app.post('/api/almacen/traslado', async (req, res) => {
     return res.status(400).json({ mensaje: 'El origen y destino deben ser diferentes' })
   try {
     const db = await getPool()
-    const nombre = await getNombre(db, codigo)
+    const { codigo_base, unidades } = await resolverCodigo(db, codigo)
+    const piezas = cantidad * unidades
+    const nombre = await getNombre(db, codigo_base)
     if (!nombre) return res.status(404).json({ mensaje: 'Producto no encontrado' })
 
-    if (!adquirirLock(codigo, `traslado:${de_ubicacion}:${a_ubicacion}`))
+    if (!adquirirLock(codigo_base, `traslado:${de_ubicacion}:${a_ubicacion}`))
       return res.json({ ok: true, mensaje: 'Traslado registrado' })
 
     // Buscar el stock en el origen — también acepta filas con ubicacion NULL (como 'Bodega')
     const stockOrigenRes = await db.request()
-      .input('codigo',    sql.VarChar(50), codigo)
+      .input('codigo',    sql.VarChar(50), codigo_base)
       .input('ubicacion', sql.VarChar(50), de_ubicacion)
       .query(`SELECT ISNULL(SUM(cantidad),0) AS stock FROM ${INV}
               WHERE codigo_barras=@codigo
                 AND (ubicacion=@ubicacion OR (ubicacion IS NULL AND @ubicacion='Bodega'))`)
     const stockOrigen = stockOrigenRes.recordset[0]?.stock ?? 0
 
-    if (stockOrigen < cantidad)
+    if (stockOrigen < piezas)
       return res.status(400).json({ mensaje: `Stock insuficiente en ${de_ubicacion}. Disponible: ${stockOrigen} pzas` })
 
     const t = db.transaction()
@@ -802,8 +937,8 @@ app.post('/api/almacen/traslado', async (req, res) => {
     try {
       // Restar del origen — atómico: solo si esa ubicación tiene suficiente.
       const updOrigen = await t.request()
-        .input('codigo',    sql.VarChar(50), codigo)
-        .input('cantidad',  sql.Int,         cantidad)
+        .input('codigo',    sql.VarChar(50), codigo_base)
+        .input('cantidad',  sql.Int,         piezas)
         .input('ubicacion', sql.VarChar(50), de_ubicacion)
         .query(`UPDATE ${INV} SET cantidad=cantidad-@cantidad, ultima_salida=GETDATE()
                 WHERE codigo_barras=@codigo AND cantidad>=@cantidad
@@ -814,8 +949,8 @@ app.post('/api/almacen/traslado', async (req, res) => {
       }
       // Sumar al destino
       await t.request()
-        .input('codigo',    sql.VarChar(50), codigo)
-        .input('cantidad',  sql.Int,         cantidad)
+        .input('codigo',    sql.VarChar(50), codigo_base)
+        .input('cantidad',  sql.Int,         piezas)
         .input('ubicacion', sql.VarChar(50), a_ubicacion)
         .query(`
           MERGE ${INV} AS target
@@ -828,8 +963,8 @@ app.post('/api/almacen/traslado', async (req, res) => {
             VALUES (@codigo,@ubicacion,@cantidad,GETDATE());`)
       // Registrar movimiento
       await t.request()
-        .input('codigo',    sql.VarChar(50), codigo)
-        .input('cantidad',  sql.Int,         cantidad)
+        .input('codigo',    sql.VarChar(50), codigo_base)
+        .input('cantidad',  sql.Int,         piezas)
         .input('de_ubic',   sql.VarChar(50), de_ubicacion)
         .input('a_ubic',    sql.VarChar(50), a_ubicacion)
         .query(`INSERT INTO ${MOV}(codigo_barras,tipo,cantidad,ubicacion,area,fecha)
@@ -837,7 +972,7 @@ app.post('/api/almacen/traslado', async (req, res) => {
       await t.commit()
     } catch (err) { await t.rollback(); throw err }
 
-    res.json({ ok: true, stockActual: await getStock(db, codigo), mensaje: `Traslado: ${cantidad} pzas de ${de_ubicacion} → ${a_ubicacion}` })
+    res.json({ ok: true, stockActual: await getStock(db, codigo_base), mensaje: `Traslado: ${piezas} pzas de ${de_ubicacion} → ${a_ubicacion}` })
   } catch (err) {
     console.error('traslado:', err.message)
     res.status(500).json({ mensaje: err.message })
@@ -858,25 +993,34 @@ app.post('/api/almacen/movimientos/:id/editar', async (req, res) => {
     if (!movResult.recordset[0]) return res.status(404).json({ mensaje: 'Movimiento no encontrado' })
 
     const { codigo_barras, tipo, cantidad: cantVieja, ubicacion } = movResult.recordset[0]
+    // Traslado y ajuste no se editan por cantidad (su efecto no es un simple +/-).
+    if (tipo === 'traslado' || tipo === 'ajuste')
+      return res.status(400).json({ mensaje: 'Este movimiento no se puede editar la cantidad. Si está mal, bórralo.' })
     const diferencia = nuevaCantidad - cantVieja
     if (diferencia === 0) return res.json({ ok: true, mensaje: 'Sin cambios' })
 
     const ajuste = tipo === 'entrada' ? diferencia : -diferencia
-    if (ajuste < 0) {
-      const s = await getStockEnUbic(db, codigo_barras, ubicacion)
-      if (s + ajuste < 0)
-        return res.status(400).json({ mensaje: `El stock quedaría negativo en ${ubicacion}.` })
-    }
 
-    await db.request()
-      .input('codigo', sql.VarChar(50), codigo_barras)
-      .input('ubicacion', sql.VarChar(50), ubicacion)
-      .input('ajuste', sql.Int, ajuste)
-      .query(`UPDATE ${INV} SET cantidad=cantidad+@ajuste WHERE codigo_barras=@codigo AND ubicacion=@ubicacion`)
-    await db.request()
-      .input('id', sql.Int, id)
-      .input('nuevaCantidad', sql.Int, nuevaCantidad)
-      .query(`UPDATE ${MOV} SET cantidad=@nuevaCantidad WHERE id=@id`)
+    // Todo dentro de una transacción con decremento atómico (no deja negativo)
+    const t = db.transaction()
+    await t.begin()
+    try {
+      const upd = await t.request()
+        .input('codigo', sql.VarChar(50), codigo_barras)
+        .input('ubicacion', sql.VarChar(50), ubicacion)
+        .input('ajuste', sql.Int, ajuste)
+        .query(`UPDATE ${INV} SET cantidad=cantidad+@ajuste
+                WHERE codigo_barras=@codigo AND ubicacion=@ubicacion AND cantidad+@ajuste>=0`)
+      if (upd.rowsAffected[0] === 0) {
+        await t.rollback()
+        return res.status(400).json({ mensaje: `El stock quedaría negativo en ${ubicacion}.` })
+      }
+      await t.request()
+        .input('id', sql.Int, id)
+        .input('nuevaCantidad', sql.Int, nuevaCantidad)
+        .query(`UPDATE ${MOV} SET cantidad=@nuevaCantidad WHERE id=@id`)
+      await t.commit()
+    } catch (err) { await t.rollback(); throw err }
 
     res.json({ ok: true, mensaje: 'Corregido' })
   } catch (err) {
@@ -951,7 +1095,10 @@ app.delete('/api/almacen/movimientos/:id', async (req, res) => {
     const t = db.transaction()
     await t.begin()
     try {
-      if (tipo === 'salida' || tipo === 'merma') {
+      if (tipo === 'ajuste') {
+        // 'ajuste' es solo un registro de auditoría del reajuste; borrarlo NO revierte
+        // el stock (no tiene una dirección simple). Solo se elimina la fila del historial.
+      } else if (tipo === 'salida' || tipo === 'merma') {
         // Devolver el stock a su ubicación
         await sumarUbicTx(t, codigo_barras, ubicacion, cantidad)
       } else if (tipo === 'traslado') {
@@ -1006,6 +1153,89 @@ app.post('/api/almacen/producto/:codigo/nombre', async (req, res) => {
     res.json({ ok: true, nombre, mensaje: 'Nombre actualizado' })
   } catch (err) {
     console.error('editar nombre:', err.message)
+    res.status(500).json({ mensaje: err.message })
+  }
+})
+
+// ── POST /api/almacen/codigos/vincular — ligar un código de caja a un producto ─
+// Body: { codigo_base, codigo_caja, piezas_por_caja }. El stock vive en piezas
+// bajo codigo_base; el código de caja representa N piezas.
+app.post('/api/almacen/codigos/vincular', async (req, res) => {
+  const codigoBase = String(req.body?.codigo_base || '').trim()
+  const codigoCaja = String(req.body?.codigo_caja || '').trim()
+  const ppc = Math.max(2, parseInt(req.body?.piezas_por_caja) || 0)
+  if (!codigoBase || !codigoCaja) return res.status(400).json({ mensaje: 'Falta el código base o el de la caja' })
+  if (codigoBase === codigoCaja)  return res.status(400).json({ mensaje: 'El código de la caja debe ser diferente al individual' })
+  if (!(ppc >= 2)) return res.status(400).json({ mensaje: 'Las piezas por caja deben ser 2 o más' })
+  try {
+    const db = await getPool()
+    if (!adquirirLock(codigoBase, `vincular:${codigoCaja}`))
+      return res.json({ ok: true, piezas_por_caja: ppc, mensaje: 'Vinculación en curso' })
+    // El producto base debe existir (tener nombre/stock) — evita códigos huérfanos
+    const nombreBase = await getNombre(db, codigoBase)
+    if (!nombreBase)
+      return res.status(400).json({ mensaje: 'El producto base no existe en la bodega. Regístralo primero en Nuevos.' })
+    // No permitir vincular como caja un código que ya tiene stock propio (sería otro producto)
+    const yaTiene = await getStock(db, codigoCaja)
+    if (yaTiene > 0)
+      return res.status(400).json({ mensaje: `Ese código ya tiene stock propio (${yaTiene}); no se puede usar como código de caja.` })
+    const t = db.transaction()
+    await t.begin()
+    try {
+      await upsertCodigo(t, { codigo: codigoBase, codigo_base: codigoBase, unidades: 1, tipo: 'individual', nombre: nombreBase })
+      await upsertCodigo(t, { codigo: codigoCaja, codigo_base: codigoBase, unidades: ppc, tipo: 'caja', nombre: nombreBase })
+      await t.commit()
+    } catch (err) { await t.rollback(); throw err }
+    res.json({ ok: true, piezas_por_caja: ppc, mensaje: `Caja vinculada: 1 caja = ${ppc} piezas` })
+  } catch (err) {
+    console.error('vincular codigo:', err.message)
+    res.status(500).json({ mensaje: err.message })
+  }
+})
+
+// ── POST /api/almacen/codigos/:codigo/reinterpretar — corregir stock mal contado ─
+// Multiplica el stock actual del producto por un factor (ej. ×12 cuando se
+// registraron cajas como si fueran piezas). Deja un movimiento 'ajuste'.
+app.post('/api/almacen/codigos/:codigo/reinterpretar', async (req, res) => {
+  const codigo = String(req.params.codigo || '').trim()
+  const factor = Math.round(Number(req.body?.factor))
+  if (!codigo) return res.status(400).json({ mensaje: 'Código inválido' })
+  if (!(factor >= 2)) return res.status(400).json({ mensaje: 'El factor debe ser un número entero de 2 o más (las piezas que trae la caja)' })
+  try {
+    const db = await getPool()
+    const { codigo_base } = await resolverCodigo(db, codigo)
+    if (!adquirirLock(codigo_base, 'reinterpretar'))
+      return res.json({ ok: true, mensaje: 'Operación en curso' })
+
+    const rows = (await db.request().input('codigo', sql.VarChar(50), codigo_base)
+      .query(`SELECT ubicacion, cantidad FROM ${INV} WHERE codigo_barras=@codigo AND cantidad>0`)).recordset
+    if (rows.length === 0) return res.status(400).json({ mensaje: 'Este producto no tiene stock para reajustar' })
+
+    const t = db.transaction()
+    await t.begin()
+    try {
+      for (const r of rows) {
+        const nuevo = Math.round(r.cantidad * factor)
+        const delta = nuevo - r.cantidad
+        await t.request()
+          .input('codigo', sql.VarChar(50), codigo_base)
+          .input('ubic',   sql.VarChar(50), r.ubicacion)
+          .input('nuevo',  sql.Int,         nuevo)
+          .query(`UPDATE ${INV} SET cantidad=@nuevo WHERE codigo_barras=@codigo AND ubicacion=@ubic`)
+        await t.request()
+          .input('codigo', sql.VarChar(50), codigo_base)
+          .input('delta',  sql.Int,         Math.abs(delta))
+          .input('ubic',   sql.VarChar(50), r.ubicacion)
+          .input('notas',  sql.VarChar(200), `Reajuste ×${factor}: ${r.cantidad} → ${nuevo}`)
+          .query(`INSERT INTO ${MOV}(codigo_barras,tipo,cantidad,ubicacion,notas,fecha)
+                  VALUES(@codigo,'ajuste',@delta,@ubic,@notas,GETDATE())`)
+      }
+      await t.commit()
+    } catch (err) { await t.rollback(); throw err }
+
+    res.json({ ok: true, stockActual: await getStock(db, codigo_base), mensaje: `Stock reajustado ×${factor}` })
+  } catch (err) {
+    console.error('reinterpretar:', err.message)
     res.status(500).json({ mensaje: err.message })
   }
 })

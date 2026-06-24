@@ -94,6 +94,9 @@ export default function Merma() {
   }
   const ubicActual = conStock.find(u => u.ubicacion === ubicacion)
   const stockDisponible = ubicActual?.cantidad ?? 0
+  // Si se escaneó el código de la caja, se cuenta en cajas (cada una = 'unid' piezas)
+  const unid = producto?.unidades || 1
+  const maxCount = unid > 1 ? Math.floor(stockDisponible / unid) : stockDisponible
 
   // ── Escanear ──────────────────────────────────────────────────────────────────
   if (paso === 'scan') return (
@@ -201,30 +204,42 @@ export default function Merma() {
 
           {/* Cantidad */}
           <div>
-            <p style={{ fontSize: 14, color: '#5F5E5A', marginBottom: 10 }}>Cantidad a dar de baja</p>
+            {unid > 1 && (
+              <div style={{ background: '#FEF3C7', border: '1px solid rgba(192,86,33,0.25)', borderRadius: 10, padding: '8px 12px', marginBottom: 10 }}>
+                <p style={{ fontSize: 12, color: '#92400E', fontWeight: 600 }}>📦 Código de CAJA · 1 caja = {unid} piezas</p>
+              </div>
+            )}
+            <p style={{ fontSize: 14, color: '#5F5E5A', marginBottom: 10 }}>
+              {unid > 1 ? '¿Cuántas cajas dar de baja?' : 'Cantidad a dar de baja'}
+            </p>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'center' }}>
               <button onClick={() => setCantidad(c => Math.max(1, c - 1))}
                 style={{ width: 64, height: 64, fontSize: 28, fontWeight: 300, border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 14, background: 'white', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 −
               </button>
               <input
-                data-manual="true" type="number" value={cantidad} min={1} max={stockDisponible}
-                onChange={e => setCantidad(Math.min(stockDisponible || 999, Math.max(1, parseInt(e.target.value) || 1)))}
+                data-manual="true" type="number" value={cantidad} min={1} max={maxCount}
+                onChange={e => setCantidad(Math.min(maxCount || 999, Math.max(1, parseInt(e.target.value) || 1)))}
                 style={{
                   width: 100, textAlign: 'center', fontSize: 32, fontWeight: 700,
                   border: `1.5px solid ${motivoActual.color}66`, borderRadius: 12,
                   padding: '10px 0', background: 'white', color: '#1a1a18',
                 }}
               />
-              <button onClick={() => setCantidad(c => Math.min(stockDisponible || 999, c + 1))}
+              <button onClick={() => setCantidad(c => Math.min(maxCount || 999, c + 1))}
                 style={{ width: 64, height: 64, fontSize: 28, fontWeight: 300, border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 14, background: 'white', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 +
               </button>
             </div>
+            {unid > 1 && (
+              <p style={{ fontSize: 13, color: motivoActual.color, textAlign: 'center', marginTop: 8, fontWeight: 600 }}>
+                = {cantidad * unid} piezas
+              </p>
+            )}
             {ubicActual && (
-              <p style={{ fontSize: 13, color: motivoActual.color, textAlign: 'center', marginTop: 8 }}>
-                Quedan en {ubicacion}: {stockDisponible - cantidad} pzas
-                {stockDisponible - cantidad < 0 && ' ⚠️'}
+              <p style={{ fontSize: 13, color: motivoActual.color, textAlign: 'center', marginTop: 6 }}>
+                Quedan en {ubicacion}: {stockDisponible - cantidad * unid} pzas
+                {stockDisponible - cantidad * unid < 0 && ' ⚠️'}
               </p>
             )}
           </div>
@@ -250,7 +265,9 @@ export default function Merma() {
               padding: '16px', border: 'none', borderRadius: 14, cursor: 'pointer',
               background: motivoActual.color, color: 'white', fontSize: 15, fontWeight: 600,
             }}>
-            {cargando ? 'Registrando...' : `${motivoActual.emoji} Confirmar baja · ${cantidad} pzas`}
+            {cargando ? 'Registrando...'
+              : unid > 1 ? `${motivoActual.emoji} Confirmar baja · ${cantidad} ${cantidad === 1 ? 'caja' : 'cajas'} (${cantidad * unid} pzas)`
+              : `${motivoActual.emoji} Confirmar baja · ${cantidad} pzas`}
           </button>
           <button className="btn-secondary" onClick={reset}>Cancelar</button>
         </>
@@ -271,7 +288,7 @@ export default function Merma() {
       }}>✓</div>
       <p style={{ fontSize: 20, fontWeight: 700, color: '#92400E' }}>Merma registrada</p>
       <p style={{ fontSize: 15, color: '#5F5E5A' }}>
-        {motivoActual.emoji} {motivoActual.label} · −{cantidad} pzas
+        {motivoActual.emoji} {motivoActual.label} · −{unid > 1 ? `${cantidad} ${cantidad === 1 ? 'caja' : 'cajas'} (${cantidad * unid} pzas)` : `${cantidad} pzas`}
       </p>
       <p style={{ fontSize: 14, color: '#5F5E5A' }}>{producto.nombre}</p>
       <p style={{ fontSize: 13, color: '#aaa' }}>📍 {ubicacion}</p>

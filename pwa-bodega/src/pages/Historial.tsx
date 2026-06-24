@@ -6,6 +6,7 @@ const TIPO_CONFIG = {
   salida:   { icon: '↑', bg: '#FAECE7', color: '#712B13', signo: '−' },
   merma:    { icon: '🗑', bg: '#FEF3C7', color: '#92400E', signo: '−' },
   traslado: { icon: '↔', bg: '#E0F2FE', color: '#075985', signo: '' },
+  ajuste:   { icon: '⚖', bg: '#EDE9FE', color: '#5B21B6', signo: '±' },
 }
 
 export default function Historial() {

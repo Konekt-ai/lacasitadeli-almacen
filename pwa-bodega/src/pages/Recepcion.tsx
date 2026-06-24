@@ -113,10 +113,13 @@ export default function Recepcion() {
       registrandoRef.current = true
       setCargando(true)
       try {
+        // Si se escaneó el código de la caja, totalConteo son cajas; el backend
+        // multiplica por las piezas que tiene la caja.
+        const unid = producto.unidades || 1
         const res = await api.registrarEntrada(producto.codigo, totalConteo, producto.nombre, null, ubicSelec)
-        setPiezasResult(totalConteo)
-        setPiezasPorCaja(1)
-        setCajasResult(0)
+        setPiezasResult(totalConteo * unid)
+        setPiezasPorCaja(unid)
+        setCajasResult(unid > 1 ? totalConteo : 0)
         setStockTrasEntrada(res.stockActual)
         setPaso('exito')
         beepOk()
@@ -145,7 +148,9 @@ export default function Recepcion() {
         codigo_barras: producto.codigo,
         cajas_recibidas: totalConteo,
         ubicacion: ubicSelec,
-        // piezas_por_caja se resuelve en el backend desde la orden esperada (conversión caja→pieza)
+        // El backend resuelve piezas_por_caja desde la orden; si el producto ya tiene
+        // un código de caja vinculado en bodega, lo mandamos como respaldo.
+        piezas_por_caja: producto.piezas_por_caja && producto.piezas_por_caja > 1 ? producto.piezas_por_caja : undefined,
         lote: lote.trim() || undefined,
         caducidad: caducidad || undefined,
       })
@@ -353,16 +358,31 @@ export default function Recepcion() {
         <span className={stockClass(producto.stock)}>Stock actual: {producto.stock} pzas</span>
       </div>
 
-      {/* Conteo: directo en piezas (suma al stock) u órdenes en cajas (convierte) */}
+      {/* Conteo: directo en piezas u órdenes en cajas. Si el código escaneado es
+          el de la CAJA, se cuenta en cajas y el backend multiplica. */}
       <div>
+        {modoDirecto && (producto.unidades || 1) > 1 && (
+          <div style={{ background: '#E5F7F0', border: '1px solid rgba(29,158,117,0.25)', borderRadius: 10, padding: '8px 12px', marginBottom: 10 }}>
+            <p style={{ fontSize: 12, color: '#085041', fontWeight: 600 }}>
+              📦 Escaneaste el código de CAJA · 1 caja = {producto.unidades} piezas
+            </p>
+          </div>
+        )}
         <p style={{ fontSize: 14, color: '#5F5E5A', marginBottom: 10 }}>
-          {modoDirecto ? '¿Cuánto llegó?' : '¿Cuántas cajas llegaron?'}
+          {modoDirecto && (producto.unidades || 1) > 1 ? '¿Cuántas cajas llegaron?'
+            : modoDirecto ? '¿Cuánto llegó?' : '¿Cuántas cajas llegaron?'}
         </p>
         <ContadorCantidad
-          unidad={modoDirecto ? 'piezas' : 'cajas'}
+          unidad={(!modoDirecto || (producto.unidades || 1) > 1) ? 'cajas' : 'piezas'}
           color="#1D9E75"
+          piezasPorCajaInicial={modoDirecto ? (producto.unidades || 1) : 1}
           onChange={t => setTotalConteo(t)}
         />
+        {modoDirecto && (producto.unidades || 1) > 1 && (
+          <p style={{ fontSize: 13, color: '#1D9E75', textAlign: 'center', marginTop: 8, fontWeight: 600 }}>
+            = {totalConteo * (producto.unidades || 1)} piezas entrarán
+          </p>
+        )}
         {!modoDirecto && (
           <p style={{ fontSize: 12, color: '#1D9E75', textAlign: 'center', marginTop: 8 }}>
             Se convierte a piezas al confirmar (según la orden)

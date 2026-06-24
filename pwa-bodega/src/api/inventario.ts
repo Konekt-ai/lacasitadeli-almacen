@@ -9,6 +9,10 @@ export interface Producto {
   nombre: string
   stock: number
   stockPorUbicacion?: StockUbicacion[]
+  codigo_base?: string
+  tipo?: 'individual' | 'caja'   // del código ESCANEADO
+  unidades?: number              // piezas que representa el código escaneado
+  piezas_por_caja?: number       // tamaño de la caja del producto (1 si no tiene)
 }
 
 export interface MovimientoResponse {
@@ -143,13 +147,29 @@ export const api = {
   // Registra un producto que aún NO existe en NovaCaja: crea su nombre propio en
   // la bodega y suma stock al instante (visible en Inventario e Historial).
   crearProductoNuevo: (p: {
-    codigo_barras: string; descripcion: string; cantidad: number
+    codigo_barras: string; codigo_caja?: string; descripcion: string; cantidad: number
     ubicacion: string; piezas_por_caja?: number; proveedor?: string | null
   }) =>
     request<MovimientoResponse>('/api/almacen/producto-nuevo', {
       method: 'POST',
       body: JSON.stringify(p),
     }),
+
+  // Liga un código de caja a un producto base (1 caja = N piezas)
+  vincularCodigoCaja: (codigo_base: string, codigo_caja: string, piezas_por_caja: number) =>
+    request<{ ok: boolean; piezas_por_caja: number; mensaje: string }>(
+      '/api/almacen/codigos/vincular', {
+        method: 'POST',
+        body: JSON.stringify({ codigo_base, codigo_caja, piezas_por_caja }),
+      }),
+
+  // Reajusta el stock mal contado multiplicándolo por un factor (ej. ×12)
+  reinterpretarStock: (codigo: string, factor: number) =>
+    request<{ ok: boolean; stockActual: number; mensaje: string }>(
+      `/api/almacen/codigos/${encodeURIComponent(codigo)}/reinterpretar`, {
+        method: 'POST',
+        body: JSON.stringify({ factor }),
+      }),
 
   registrarSalida: (codigo: string, cantidad: number, ubicacion: string, nombre?: string) =>
     request<MovimientoResponse>('/api/almacen/salida', {
