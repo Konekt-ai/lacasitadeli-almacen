@@ -1449,6 +1449,54 @@ app.post('/api/almacen/ajuste-manual', async (req, res) => {
   }
 })
 
+// ── POST /api/almacen/codigos/caja-rapida ─────────────────────────────────────
+// Atajo para configurar un código DESCONOCIDO como "caja de N piezas" al vuelo
+// (p.ej. al escanear una caja en Recepción que aún no existe). Registra el código
+// como caja auto-contenida (el mismo código es su base) para que al escanearlo el
+// sistema sume N piezas automáticamente. El stock sigue viviendo en piezas.
+app.post('/api/almacen/codigos/caja-rapida', async (req, res) => {
+  const codigo = String(req.body?.codigo || '').trim()
+  const nombre = String(req.body?.nombre || '').trim()
+  const ppc    = Math.max(2, parseInt(req.body?.piezas_por_caja) || 0)
+  if (!codigo || codigo.length < 4) return res.status(400).json({ mensaje: 'Código inválido' })
+  if (!(ppc >= 2))                   return res.status(400).json({ mensaje: 'Las piezas por caja deben ser 2 o más' })
+  if (nombre.length < 3)             return res.status(400).json({ mensaje: 'Escribe el nombre del producto (mín. 3 letras)' })
+  if (/^[\d\s.-]+$/.test(nombre))    return res.status(400).json({ mensaje: 'El nombre no puede ser solo números (eso es un código)' })
+  try {
+    const db = await getPool()
+    // No convertir en caja un código que ya pertenece a OTRO producto (evita romper enlaces)
+    const { codigo_base } = await resolverCodigo(db, codigo)
+    if (codigo_base !== codigo)
+      return res.status(400).json({ mensaje: 'Ese código ya pertenece a un producto. Usa Inventario → 📦 para vincular su caja.' })
+    const otraCaja = await db.request().input('base', sql.VarChar(50), codigo)
+      .query(`SELECT TOP 1 codigo FROM ${COD} WHERE codigo_base=@base AND tipo='caja' AND codigo<>@base`)
+    if (otraCaja.recordset[0])
+      return res.status(400).json({ mensaje: 'Este producto ya tiene una caja vinculada. Usa Inventario → 📦 para cambiarla.' })
+    // No reinterpretar como caja un código que ya tiene stock propio contado en piezas
+    if (await getStock(db, codigo) > 0)
+      return res.status(400).json({ mensaje: 'Ese código ya tiene stock registrado. Revísalo en Inventario y usa 📦 si es una caja.' })
+
+    // Registra el código como CAJA de N piezas (auto-contenida: base = el mismo código)
+    await upsertCodigo(db, { codigo, codigo_base: codigo, unidades: ppc, tipo: 'caja', nombre })
+    // Guarda el nombre en inventario_bodega (fila en 0 si no había) para que sea buscable
+    await db.request()
+      .input('codigo', sql.VarChar(50),  codigo)
+      .input('nombre', sql.VarChar(200), nombre)
+      .query(`
+        MERGE ${INV} AS t
+        USING (SELECT @codigo AS codigo_barras, 'Bodega' AS ubicacion) AS s
+          ON t.codigo_barras=s.codigo_barras AND t.ubicacion=s.ubicacion
+        WHEN MATCHED THEN UPDATE SET nombre=ISNULL(NULLIF(t.nombre,''),@nombre)
+        WHEN NOT MATCHED THEN INSERT (codigo_barras,ubicacion,cantidad,nombre)
+          VALUES (@codigo,'Bodega',0,@nombre);`)
+
+    res.json({ ok: true, codigo, piezas_por_caja: ppc, nombre, mensaje: `Caja configurada: 1 caja = ${ppc} piezas` })
+  } catch (err) {
+    console.error('caja-rapida:', err.message)
+    res.status(500).json({ mensaje: err.message })
+  }
+})
+
 // ── GET/POST/DELETE /api/almacen/ubicaciones/areas ────────────────────────────
 app.get('/api/almacen/ubicaciones/areas', async (_req, res) => {
   try {

@@ -19,6 +19,12 @@ function fmtFecha(fecha: string) {
   return d.toLocaleString('es-MX', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
+// Cuántas cajas completas y cuántas piezas sueltas hay en una cantidad de piezas.
+function desglosaCajas(qty: number, ppc: number): { cajas: number; sueltas: number } | null {
+  if (!ppc || ppc < 2) return null
+  return { cajas: Math.floor(qty / ppc), sueltas: qty % ppc }
+}
+
 export default function ProductoDetalle({ codigo, onClose, onCambio }: {
   codigo: string
   onClose: () => void
@@ -160,7 +166,7 @@ export default function ProductoDetalle({ codigo, onClose, onCambio }: {
   }
 
   const cajaCod = det?.codigos.find(c => c.tipo === 'caja')
-  const indCod  = det?.codigos.find(c => c.tipo === 'individual') ?? det?.codigos[0]
+  const indCod  = det?.codigos.find(c => c.tipo === 'individual')   // solo individual real (no la caja)
 
   // Filas del editor: áreas activas + cualquier ubicación con stock que no esté en
   // esa lista (legado/áreas desactivadas), para no ocultar ni volver ineditable stock.
@@ -218,13 +224,30 @@ export default function ProductoDetalle({ codigo, onClose, onCambio }: {
                 <span style={{ fontSize: 13, color: '#5F5E5A', fontWeight: 600 }}>Stock total</span>
                 <span>
                   <span style={{ fontSize: 30, fontWeight: 800, color: det.stock > 0 ? '#1D9E75' : '#bbb' }}>{det.stock}</span>
-                  <span style={{ fontSize: 12, color: '#aaa', marginLeft: 4 }}>pzas</span>
+                  <span style={{ fontSize: 12, color: '#aaa', marginLeft: 4 }}>piezas</span>
                 </span>
               </div>
-              {det.piezas_por_caja > 1 && det.stock > 0 && (
-                <p style={{ fontSize: 12, color: AZUL, fontWeight: 600, marginTop: 6 }}>
-                  = {Math.floor(det.stock / det.piezas_por_caja)} {Math.floor(det.stock / det.piezas_por_caja) === 1 ? 'caja' : 'cajas'} de {det.piezas_por_caja}
-                  {det.stock % det.piezas_por_caja > 0 ? ` + ${det.stock % det.piezas_por_caja} sueltas` : ''}
+
+              {det.piezas_por_caja > 1 ? (
+                <>
+                  {/* Desglose cajas completas vs. piezas sueltas */}
+                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                    <div style={{ flex: 1, background: '#F0F7FF', border: `1px solid ${AZUL}22`, borderRadius: 10, padding: '10px 8px', textAlign: 'center' }}>
+                      <p style={{ fontSize: 22, fontWeight: 800, color: AZUL, lineHeight: 1 }}>📦 {desglosaCajas(det.stock, det.piezas_por_caja)!.cajas}</p>
+                      <p style={{ fontSize: 11, color: '#5F5E5A', marginTop: 4 }}>cajas completas</p>
+                    </div>
+                    <div style={{ flex: 1, background: '#F0FBF6', border: '1px solid rgba(29,158,117,0.2)', borderRadius: 10, padding: '10px 8px', textAlign: 'center' }}>
+                      <p style={{ fontSize: 22, fontWeight: 800, color: '#1D9E75', lineHeight: 1 }}>🔢 {desglosaCajas(det.stock, det.piezas_por_caja)!.sueltas}</p>
+                      <p style={{ fontSize: 11, color: '#5F5E5A', marginTop: 4 }}>piezas sueltas</p>
+                    </div>
+                  </div>
+                  <p style={{ fontSize: 11, color: '#aaa', marginTop: 8, textAlign: 'center' }}>
+                    1 caja = {det.piezas_por_caja} piezas · cada pieza se vende individual
+                  </p>
+                </>
+              ) : (
+                <p style={{ fontSize: 11, color: '#aaa', marginTop: 8 }}>
+                  Se maneja por pieza individual. Vincula una caja con 📦 para contar por cajas.
                 </p>
               )}
             </div>
@@ -236,7 +259,9 @@ export default function ProductoDetalle({ codigo, onClose, onCambio }: {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: cajaCod ? 10 : 12 }}>
                 <div>
                   <p style={{ fontSize: 11, color: '#888', fontWeight: 600 }}>Individual (1 pieza)</p>
-                  <p style={{ fontSize: 13, fontFamily: 'monospace', color: '#1a1a18', wordBreak: 'break-all' }}>{indCod?.codigo ?? det.codigo_base}</p>
+                  <p style={{ fontSize: 13, fontFamily: 'monospace', color: indCod ? '#1a1a18' : '#bbb', wordBreak: 'break-all' }}>
+                    {indCod ? indCod.codigo : (cajaCod ? 'Sin código individual · se cuenta por caja' : det.codigo_base)}
+                  </p>
                 </div>
                 <span style={{ fontSize: 20 }}>🏷️</span>
               </div>
@@ -249,6 +274,11 @@ export default function ProductoDetalle({ codigo, onClose, onCambio }: {
                   <p style={{ fontSize: 13, fontFamily: 'monospace', color: cajaCod ? '#1a1a18' : '#bbb', wordBreak: 'break-all' }}>
                     {cajaCod ? cajaCod.codigo : 'Sin código de caja'}
                   </p>
+                  {cajaCod && (
+                    <p style={{ fontSize: 11, color: '#1D9E75', marginTop: 3 }}>
+                      ✓ Al escanear esta caja se suman {cajaCod.unidades} piezas automáticamente
+                    </p>
+                  )}
                 </div>
                 <button onClick={vincularCaja} disabled={!!guardando}
                   style={{ flexShrink: 0, background: '#F0F7FF', border: `1px solid ${AZUL}40`, color: AZUL, borderRadius: 8, padding: '8px 12px', cursor: guardando ? 'default' : 'pointer', opacity: guardando ? 0.5 : 1, fontSize: 12, fontWeight: 600 }}>
@@ -281,6 +311,12 @@ export default function ProductoDetalle({ codigo, onClose, onCambio }: {
                         <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: '#1a1a18' }}>{a.nombre}</span>
                         <span style={{ fontSize: 11, color: '#aaa' }}>ahora: {actual}</span>
                       </div>
+
+                      {det.piezas_por_caja > 1 && actual > 0 && (
+                        <p style={{ fontSize: 11, color: AZUL, marginTop: -3, marginBottom: 8 }}>
+                          📦 {desglosaCajas(actual, det.piezas_por_caja)!.cajas} cajas + {desglosaCajas(actual, det.piezas_por_caja)!.sueltas} sueltas
+                        </p>
+                      )}
 
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <button onClick={() => nudge(a.nombre, -1)} disabled={enCurso}

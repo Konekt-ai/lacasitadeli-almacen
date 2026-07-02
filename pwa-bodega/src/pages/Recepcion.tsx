@@ -29,6 +29,11 @@ export default function Recepcion() {
   const [modoDirecto,     setModoDirecto]     = useState(false)
   const [totalConteo,     setTotalConteo]     = useState(0)
   const [stockTrasEntrada, setStockTrasEntrada] = useState(0)
+  // Atajo: configurar una caja desconocida al vuelo (código escaneado no encontrado)
+  const [codigoFallido,    setCodigoFallido]    = useState('')
+  const [cajaNombre,       setCajaNombre]       = useState('')
+  const [cajaPpc,          setCajaPpc]          = useState('12')
+  const [configurandoCaja, setConfigurandoCaja] = useState(false)
   const scanTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null)
   const registrandoRef = useRef(false)
 
@@ -84,6 +89,7 @@ export default function Recepcion() {
   const buscarProducto = useCallback(async (codigo: string) => {
     if (cargando) return
     setCargando(true)
+    setCodigoFallido(codigo.trim())
     try {
       const prod = await api.getProducto(codigo.trim())
       setProducto(prod)
@@ -99,7 +105,35 @@ export default function Recepcion() {
     }
   }, [cargando])
 
-  useBarcodeScan(buscarProducto)
+  // El escáner solo actúa en el paso de escaneo. Así, estando en 'confirmar' (o en
+  // el panel de error), un escaneo accidental no reinicia el conteo ni cambia el producto.
+  useBarcodeScan(buscarProducto, paso === 'scan')
+
+  // Atajo: registra el código escaneado (no encontrado) como una caja de N piezas
+  // y salta directo a contar cajas. Cada caja escaneada sumará N piezas.
+  async function configurarCaja() {
+    const nombre = cajaNombre.trim()
+    const ppc = parseInt(cajaPpc, 10)
+    if (nombre.length < 3) { setError('Escribe el nombre del producto (mín. 3 letras).'); beepError(); return }
+    if (!(ppc >= 2))       { setError('Las piezas por caja deben ser 2 o más.'); beepError(); return }
+    setConfigurandoCaja(true)
+    try {
+      await api.configurarCajaRapida(codigoFallido, ppc, nombre)
+      const prod = await api.getProducto(codigoFallido)
+      setProducto(prod)
+      setTotalConteo(0)
+      setCajaNombre('')
+      setCajaPpc('12')
+      setError('')
+      setPaso('confirmar')
+      beepOk()
+    } catch (e) {
+      setError((e as Error).message)
+      beepError()
+    } finally {
+      setConfigurandoCaja(false)
+    }
+  }
 
   async function confirmar() {
     if (!producto || registrandoRef.current) return
@@ -178,6 +212,9 @@ export default function Recepcion() {
     setError('')
     setCaducidad('')
     setLote('')
+    setCodigoFallido('')
+    setCajaNombre('')
+    setCajaPpc('12')
     if (ubicaciones.length > 0) setUbicSelec(ubicaciones[0].nombre)
   }
 
@@ -192,6 +229,9 @@ export default function Recepcion() {
     setError('')
     setCaducidad('')
     setLote('')
+    setCodigoFallido('')
+    setCajaNombre('')
+    setCajaPpc('12')
   }
 
   function stockClass(s: number) {
@@ -522,8 +562,45 @@ export default function Recepcion() {
       <div style={{ width: 80, height: 80, borderRadius: '50%', background: '#FAECE7', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 36, marginBottom: 8 }}>✕</div>
       <p style={{ fontSize: 18, fontWeight: 700, color: '#712B13' }}>Error</p>
       <p style={{ fontSize: 14, color: '#5F5E5A' }}>{error}</p>
+
+      {/* Atajo: el código no existe → configurarlo como caja de N piezas al vuelo.
+          Solo en entrada rápida (sin orden), donde la conversión caja→pieza es local. */}
+      {modoDirecto && codigoFallido && /encontrad/i.test(error) && (
+        <div style={{
+          width: '100%', background: '#F0F7FF', border: '1px solid rgba(59,130,246,0.25)',
+          borderRadius: 14, padding: 16, textAlign: 'left', marginTop: 4,
+        }}>
+          <p style={{ fontSize: 14, fontWeight: 700, color: '#1D4ED8', marginBottom: 2 }}>📦 ¿Es una caja nueva?</p>
+          <p style={{ fontSize: 12, color: '#5F5E5A', marginBottom: 10 }}>
+            Configúrala y luego indica cuántas cajas llegaron. Cada caja sumará las piezas que pongas.
+          </p>
+          <p style={{ fontSize: 11, color: '#888', fontFamily: 'monospace', marginBottom: 12 }}>Código: {codigoFallido}</p>
+
+          <label style={{ fontSize: 11, color: '#888', fontWeight: 600, display: 'block', marginBottom: 4 }}>Nombre del producto</label>
+          <input data-manual="true" value={cajaNombre} onChange={e => setCajaNombre(e.target.value)}
+            placeholder="Ej. Galletas de chocolate"
+            style={{ width: '100%', padding: 12, fontSize: 15, boxSizing: 'border-box', border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 10, marginBottom: 12, background: 'white', color: '#1a1a18' }} />
+
+          <label style={{ fontSize: 11, color: '#888', fontWeight: 600, display: 'block', marginBottom: 4 }}>¿Cuántas piezas trae cada caja?</label>
+          <input data-manual="true" type="number" min="2" value={cajaPpc} onChange={e => setCajaPpc(e.target.value)}
+            style={{ width: '100%', padding: 12, fontSize: 15, boxSizing: 'border-box', border: '1.5px solid rgba(0,0,0,0.12)', borderRadius: 10, marginBottom: 14, background: 'white', color: '#1a1a18', textAlign: 'center' }} />
+
+          <button onClick={configurarCaja}
+            disabled={configurandoCaja || cajaNombre.trim().length < 3 || !(parseInt(cajaPpc, 10) >= 2)}
+            style={{
+              width: '100%', padding: 13, border: 'none', borderRadius: 12,
+              background: '#3B82F6', color: 'white', fontSize: 14, fontWeight: 700,
+              opacity: (configurandoCaja || cajaNombre.trim().length < 3 || !(parseInt(cajaPpc, 10) >= 2)) ? 0.5 : 1,
+            }}>
+            {configurandoCaja ? 'Configurando...' : '📦 Configurar y contar cajas'}
+          </button>
+        </div>
+      )}
+
       <div style={{ marginTop: 20, width: '100%' }}>
-        <button className="btn-primary" onClick={reset}>Intentar de nuevo</button>
+        <button className="btn-primary" onClick={reset}>
+          {modoDirecto && codigoFallido && /encontrad/i.test(error) ? 'Volver a escanear' : 'Intentar de nuevo'}
+        </button>
       </div>
     </div>
   )

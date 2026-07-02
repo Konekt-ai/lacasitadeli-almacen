@@ -186,6 +186,15 @@ export const api = {
       body: JSON.stringify(p),
     }),
 
+  // Configura un código DESCONOCIDO como "caja de N piezas" al vuelo (atajo de
+  // Recepción cuando se escanea una caja que aún no existe).
+  configurarCajaRapida: (codigo: string, piezas_por_caja: number, nombre: string) =>
+    request<{ ok: boolean; codigo: string; piezas_por_caja: number; nombre: string; mensaje: string }>(
+      '/api/almacen/codigos/caja-rapida', {
+        method: 'POST',
+        body: JSON.stringify({ codigo, piezas_por_caja, nombre }),
+      }),
+
   // Liga un código de caja a un producto base (1 caja = N piezas)
   vincularCodigoCaja: (codigo_base: string, codigo_caja: string, piezas_por_caja: number) =>
     request<{ ok: boolean; piezas_por_caja: number; mensaje: string }>(
