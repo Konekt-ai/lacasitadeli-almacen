@@ -158,15 +158,21 @@ export default function Buscar() {
                   </div>
                 </div>
 
-                {/* Stock total + indicador de tocable */}
-                <div style={{ textAlign: 'right', flexShrink: 0, paddingTop: 2, display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-                  <div>
+                {/* Stock total + botón claro de "abrir ficha" */}
+                <div style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+                  <div style={{ textAlign: 'right' }}>
                     <p style={{ fontSize: 24, fontWeight: 700, color: stockColor(r.stock), lineHeight: 1 }}>
                       {r.stock}
                     </p>
                     <p style={{ fontSize: 10, color: '#aaa', marginTop: 2 }}>pzas</p>
                   </div>
-                  <span style={{ fontSize: 18, color: '#ccc', lineHeight: 1.1 }}>›</span>
+                  {/* Se ve como botón (el clic lo maneja la tarjeta completa) */}
+                  <span style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                    padding: '7px 12px', borderRadius: 20,
+                    background: '#EAF2FE', border: '1px solid rgba(59,130,246,0.45)',
+                    color: '#3B82F6', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap',
+                  }}>⚙️ Ver / editar</span>
                 </div>
               </button>
             )
