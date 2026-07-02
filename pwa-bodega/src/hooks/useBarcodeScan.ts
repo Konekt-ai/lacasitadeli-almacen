@@ -3,11 +3,13 @@ import { useEffect, useRef } from 'react'
 // El lector Zebra TC52 tipea los caracteres en ráfaga (<50ms entre teclas).
 // Dispara onScan cuando llega Enter O cuando pasan 120ms sin más caracteres
 // y el buffer tiene >= 4 chars (scanner sin sufijo Enter configurado).
-export function useBarcodeScan(onScan: (codigo: string) => void) {
+export function useBarcodeScan(onScan: (codigo: string) => void, enabled = true) {
   const bufferRef = useRef('')
   const timerRef  = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
+    if (!enabled) return
+
     function flush() {
       const codigo = bufferRef.current.trim()
       bufferRef.current = ''
@@ -39,5 +41,5 @@ export function useBarcodeScan(onScan: (codigo: string) => void) {
       window.removeEventListener('keydown', handleKeyDown)
       if (timerRef.current) clearTimeout(timerRef.current)
     }
-  }, [onScan])
+  }, [onScan, enabled])
 }

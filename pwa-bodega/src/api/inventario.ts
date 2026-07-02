@@ -21,6 +21,37 @@ export interface MovimientoResponse {
   mensaje: string
 }
 
+// Un código ligado a un producto (individual = 1 pieza, caja = N piezas)
+export interface CodigoProducto {
+  codigo: string
+  tipo: 'individual' | 'caja'
+  unidades: number
+}
+
+// Un renglón del historial de un producto (mini-historial del modal de detalle)
+export interface MovimientoProducto {
+  id: number
+  tipo: 'entrada' | 'salida' | 'merma' | 'traslado' | 'ajuste'
+  cantidad: number
+  ubicacion: string | null
+  stock_antes: number
+  stock_despues: number
+  motivo?: string | null
+  notas?: string | null
+  fecha: string
+}
+
+// Ficha completa de un producto para el modal de Inventario
+export interface ProductoDetalle {
+  codigo_base: string
+  nombre: string
+  stock: number
+  stockPorUbicacion: StockUbicacion[]
+  piezas_por_caja: number
+  codigos: CodigoProducto[]
+  movimientos: MovimientoProducto[]
+}
+
 export interface Movimiento {
   id: number
   codigo: string
@@ -205,6 +236,18 @@ export const api = {
 
   buscarProductos: (q: string) =>
     request<Producto[]>(`/api/almacen/buscar?q=${encodeURIComponent(q)}`, undefined, 15000),
+
+  // Ficha completa del producto (para el modal de Inventario)
+  getDetalle: (codigo: string) =>
+    request<ProductoDetalle>(`/api/almacen/producto/${encodeURIComponent(codigo)}/detalle`, undefined, 15000),
+
+  // Fija la cantidad EXACTA de una ubicación (ej. 14 → 11). No multiplica.
+  ajustarManual: (codigo: string, ubicacion: string, nuevaCantidad: number) =>
+    request<{ ok: boolean; stockActual: number; stockEnUbic: number; mensaje: string }>(
+      '/api/almacen/ajuste-manual', {
+        method: 'POST',
+        body: JSON.stringify({ codigo, ubicacion, nuevaCantidad }),
+      }),
 
   trasladar: (codigo: string, cantidad: number, de_ubicacion: string, a_ubicacion: string) =>
     request<MovimientoResponse>('/api/almacen/traslado', {

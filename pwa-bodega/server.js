@@ -325,6 +325,50 @@ async function getStockPorUbicacion(db, codigo) {
   return []
 }
 
+// Códigos que representan el MISMO producto físico: el código base + su GTIN y su
+// código alterno del catálogo. Sirve para que la ficha/el ajuste NO dejen stock
+// huérfano cuando un producto quedó partido entre su GTIN y su código alterno
+// (se escaneó con ambos antes de existir la relación).
+async function getCodigosFamilia(db, codigoBase) {
+  const codes = new Set([codigoBase])
+  try {
+    // Solo por códigos de BARRAS (GTIN/alterno). NO por Art_Codigo (código interno):
+    // el código base siempre es un código de barras, y emparejar por Art_Codigo podría
+    // enganchar —y luego consolidar/borrar— el stock de OTRO producto por colisión.
+    const r = await db.request()
+      .input('c', sql.NVarChar(50), codigoBase)
+      .query(`SELECT TOP 1 Art_GTIN, CodAlt_Codigo FROM ${VISTA}
+              WHERE Art_GTIN=@c OR CodAlt_Codigo=@c
+              ORDER BY CASE WHEN Art_GTIN=@c THEN 0 ELSE 1 END, Art_GTIN`)
+    const row = r.recordset[0]
+    if (row) for (const c of [row.Art_GTIN, row.CodAlt_Codigo]) {
+      const v = (c ?? '').toString().trim()
+      if (v) codes.add(v)
+    }
+  } catch {}
+  return [...codes]
+}
+
+// Stock total sumando toda la familia de códigos (reusa el helper resiliente).
+async function getStockFamilia(db, codigos) {
+  let s = 0
+  for (const c of codigos) s += await getStock(db, c)
+  return s
+}
+
+// Desglose por ubicación agregando toda la familia (reusa el helper resiliente).
+async function getStockPorUbicacionFamilia(db, codigos) {
+  const acc = {}
+  for (const c of codigos) {
+    const rows = await getStockPorUbicacion(db, c)
+    for (const r of rows) {
+      if (!acc[r.ubicacion]) acc[r.ubicacion] = { ubicacion: r.ubicacion, cantidad: 0, color: r.color }
+      acc[r.ubicacion].cantidad += r.cantidad
+    }
+  }
+  return Object.values(acc).sort((a, b) => b.cantidad - a.cantidad)
+}
+
 // Devuelve el código canónico guardado en inventario_bodega para este producto
 // (puede ser Art_GTIN o CodAlt_Codigo según cómo se escaneó por primera vez)
 async function getCodigoReal(db, codigo) {
@@ -423,6 +467,50 @@ app.get('/api/almacen/producto/:codigo', async (req, res) => {
     })
   } catch (err) {
     console.error('getProducto:', err.message)
+    res.status(500).json({ mensaje: err.message })
+  }
+})
+
+// ── GET /api/almacen/producto/:codigo/detalle ─────────────────────────────────
+// Ficha completa para el modal de Inventario: nombre, códigos (individual y caja),
+// stock por ubicación, tamaño de caja y el historial reciente del producto.
+app.get('/api/almacen/producto/:codigo/detalle', async (req, res) => {
+  try {
+    const db = await getPool()
+    const { codigo_base } = await resolverCodigo(db, req.params.codigo)
+    const nombre = await getNombre(db, codigo_base)
+    if (!nombre) return res.status(404).json({ mensaje: 'Producto no encontrado' })
+
+    // Familia de códigos (GTIN + alterno) para agregar stock e historial y que el
+    // total del modal cuadre con la tarjeta de búsqueda.
+    const familia = await getCodigosFamilia(db, codigo_base)
+    const inFam = familia.map(c => `'${String(c).replace(/'/g, "''")}'`).join(',')
+
+    const [stock, stockPorUbicacion, piezas_por_caja, codigosRes, movRes] = await Promise.all([
+      getStockFamilia(db, familia),
+      getStockPorUbicacionFamilia(db, familia),
+      getPiezasPorCaja(db, codigo_base),
+      db.request().input('base', sql.VarChar(50), codigo_base)
+        .query(`SELECT codigo, tipo, unidades FROM ${COD}
+                WHERE codigo_base=@base
+                ORDER BY CASE WHEN tipo='individual' THEN 0 ELSE 1 END, unidades`),
+      db.request()
+        .query(`SELECT TOP 30 id, tipo, cantidad, ISNULL(ubicacion,'Bodega') AS ubicacion,
+                       ISNULL(stock_antes,0)  AS stock_antes,
+                       ISNULL(stock_despues,0) AS stock_despues,
+                       motivo, notas, CONVERT(VARCHAR(23),fecha,120) AS fecha
+                FROM ${MOV} WHERE codigo_barras IN (${inFam}) ORDER BY fecha DESC`),
+    ])
+
+    let codigos = codigosRes.recordset
+    if (codigos.length === 0) codigos = [{ codigo: codigo_base, tipo: 'individual', unidades: 1 }]
+
+    res.json({
+      codigo_base, nombre, stock, stockPorUbicacion, piezas_por_caja,
+      codigos, movimientos: movRes.recordset,
+    })
+  } catch (err) {
+    console.error('detalle:', err.message)
     res.status(500).json({ mensaje: err.message })
   }
 })
@@ -1258,6 +1346,105 @@ app.post('/api/almacen/codigos/:codigo/reinterpretar', async (req, res) => {
     res.json({ ok: true, stockActual: await getStock(db, codigo_base), mensaje: `Stock reajustado ×${factor}` })
   } catch (err) {
     console.error('reinterpretar:', err.message)
+    res.status(500).json({ mensaje: err.message })
+  }
+})
+
+// ── POST /api/almacen/ajuste-manual — fijar la cantidad EXACTA de una ubicación ─
+// Pone el stock de un producto en una ubicación a un número exacto (ej. 14 → 11).
+// NO multiplica: calcula la diferencia y la aplica. Sirve para corregir a mano sin
+// el riesgo del reajuste ×N. Deja un movimiento 'ajuste' con la nota del cambio.
+app.post('/api/almacen/ajuste-manual', async (req, res) => {
+  const { codigo, ubicacion } = req.body
+  const ubic  = normUbic(ubicacion)
+  const nueva = Math.round(Number(req.body?.nuevaCantidad))
+  if (!codigo) return res.status(400).json({ mensaje: 'Código inválido' })
+  if (!Number.isFinite(nueva) || nueva < 0)
+    return res.status(400).json({ mensaje: 'La cantidad debe ser un número de 0 o más' })
+  if (nueva > 100000)
+    return res.status(400).json({ mensaje: 'Cantidad demasiado grande (máx. 100000). Revisa el número.' })
+  try {
+    const db = await getPool()
+    const { codigo_base } = await resolverCodigo(db, codigo)
+    const nombre = await getNombre(db, codigo_base)
+    if (!nombre) return res.status(404).json({ mensaje: 'Producto no encontrado' })
+
+    // Familia de códigos del producto (GTIN + alterno). El ajuste consolida el stock
+    // de esa ubicación en el código canónico para no dejar piezas huérfanas si el
+    // producto quedó partido entre dos códigos.
+    const familia = await getCodigosFamilia(db, codigo_base)
+    const inFam   = familia.map(c => `'${String(c).replace(/'/g, "''")}'`).join(',')
+    const otros   = familia.filter(c => c !== codigo_base)
+    const inOtros = otros.map(c => `'${String(c).replace(/'/g, "''")}'`).join(',')
+
+    // Todo en UNA transacción atómica (sin el lock que fingía éxito): evita escrituras
+    // perdidas y deja la auditoría (stock_antes/despues) consistente.
+    const t = db.transaction()
+    await t.begin()
+    try {
+      // Cantidad previa de TODA la familia en esta ubicación (para calcular el delta)
+      const prevRes = await t.request()
+        .input('ubic', sql.VarChar(50), ubic)
+        .query(`SELECT ISNULL(SUM(cantidad),0) AS s FROM ${INV}
+                WHERE codigo_barras IN (${inFam}) AND ubicacion=@ubic`)
+      const prev  = prevRes.recordset[0]?.s ?? 0
+      const delta = nueva - prev
+
+      // Fija el código canónico a la cantidad EXACTA (crea la fila si no existía)
+      await t.request()
+        .input('codigo', sql.VarChar(50), codigo_base)
+        .input('ubic',   sql.VarChar(50), ubic)
+        .input('nueva',  sql.Int,         nueva)
+        .query(`
+          MERGE ${INV} AS target
+          USING (SELECT @codigo AS codigo_barras, @ubic AS ubicacion) AS src
+            ON target.codigo_barras=src.codigo_barras AND target.ubicacion=src.ubicacion
+          WHEN MATCHED THEN
+            UPDATE SET cantidad=@nueva,
+                       ultima_entrada=CASE WHEN @nueva>target.cantidad THEN GETDATE() ELSE target.ultima_entrada END,
+                       ultima_salida =CASE WHEN @nueva<target.cantidad THEN GETDATE() ELSE target.ultima_salida  END
+          WHEN NOT MATCHED THEN
+            INSERT (codigo_barras,ubicacion,cantidad,ultima_entrada)
+            VALUES (@codigo,@ubic,@nueva,GETDATE());`)
+
+      // Absorbe (pone en 0) el stock de los códigos hermanos en esta ubicación, para
+      // que el total quede EXACTAMENTE en 'nueva' sin dejar piezas huérfanas.
+      if (inOtros) {
+        await t.request()
+          .input('ubic', sql.VarChar(50), ubic)
+          .query(`UPDATE ${INV} SET cantidad=0, ultima_salida=GETDATE()
+                  WHERE codigo_barras IN (${inOtros}) AND ubicacion=@ubic AND cantidad<>0`)
+      }
+
+      // Total de la familia tras el cambio (dentro de la transacción → consistente)
+      const totRes = await t.request()
+        .query(`SELECT ISNULL(SUM(cantidad),0) AS s FROM ${INV} WHERE codigo_barras IN (${inFam})`)
+      const stockDespues = totRes.recordset[0]?.s ?? 0
+      const stockAntes   = stockDespues - delta
+
+      // Registra el ajuste solo si hubo cambio neto de cantidad
+      if (delta !== 0) {
+        await t.request()
+          .input('codigo',       sql.VarChar(50),  codigo_base)
+          .input('cantidad',     sql.Int,          Math.abs(delta))
+          .input('ubic',         sql.VarChar(50),  ubic)
+          .input('stockAntes',   sql.Int,          stockAntes)
+          .input('stockDespues', sql.Int,          stockDespues)
+          .input('notas',        sql.VarChar(200), `Ajuste manual en ${ubic}: ${prev} → ${nueva}`)
+          .query(`INSERT INTO ${MOV}(codigo_barras,tipo,cantidad,ubicacion,stock_antes,stock_despues,notas,fecha)
+                  VALUES(@codigo,'ajuste',@cantidad,@ubic,@stockAntes,@stockDespues,@notas,GETDATE())`)
+      }
+      await t.commit()
+
+      res.json({
+        ok: true, stockActual: stockDespues, stockEnUbic: nueva,
+        mensaje: delta === 0 ? 'Sin cambios'
+               : delta > 0   ? `Se sumaron ${delta} pzas en ${ubic}`
+               :               `Se restaron ${Math.abs(delta)} pzas en ${ubic}`,
+      })
+    } catch (err) { await t.rollback(); throw err }
+  } catch (err) {
+    console.error('ajuste-manual:', err.message)
     res.status(500).json({ mensaje: err.message })
   }
 })

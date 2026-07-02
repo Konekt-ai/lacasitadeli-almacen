@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useBarcodeScan } from '../hooks/useBarcodeScan'
 import { api, type Producto } from '../api/inventario'
 import { beepScan, beepError } from '../utils/beep'
+import ProductoDetalle from '../components/ProductoDetalle'
 
 function stockColor(stock: number) {
   if (stock === 0) return '#bbb'
@@ -10,15 +11,18 @@ function stockColor(stock: number) {
 }
 
 export default function Buscar() {
-  const [query,      setQuery]      = useState('')
-  const [resultados, setResultados] = useState<Producto[]>([])
-  const [cargando,   setCargando]   = useState(false)
-  const [error,      setError]      = useState('')
-  const [buscado,    setBuscado]    = useState(false)
+  const [query,         setQuery]         = useState('')
+  const [resultados,    setResultados]    = useState<Producto[]>([])
+  const [cargando,      setCargando]      = useState(false)
+  const [error,         setError]         = useState('')
+  const [buscado,       setBuscado]       = useState(false)
+  const [detalleCodigo, setDetalleCodigo] = useState<string | null>(null)
+  const ultimoTermino = useRef('')   // último término buscado (texto o código escaneado)
 
   async function buscar(q = query) {
     const termino = q.trim()
     if (termino.length < 2) return
+    ultimoTermino.current = termino
     setCargando(true)
     setError('')
     setBuscado(true)
@@ -35,60 +39,13 @@ export default function Buscar() {
     }
   }
 
-  useBarcodeScan(buscar)
-
-  async function renombrar(codigo: string, nombreActual: string) {
-    const nuevo = window.prompt(
-      `Corregir el nombre del producto.\n\nEscribe el nombre real (no el código).`,
-      nombreActual
-    )
-    if (nuevo === null) return
-    const nombre = nuevo.trim()
-    if (nombre.length < 3) { alert('El nombre debe tener al menos 3 letras.'); return }
-    if (/^[\d\s.-]+$/.test(nombre)) { alert('El nombre no puede ser solo números (eso es un código).'); return }
-    try {
-      setCargando(true)
-      await api.actualizarNombre(codigo, nombre)
-      await buscar()
-    } catch (e) {
-      alert((e as Error).message)
-      setCargando(false)
-    }
+  // Re-ejecuta la última búsqueda (para refrescar la lista tras editar en el modal)
+  function refrescar() {
+    if (ultimoTermino.current.length >= 2) buscar(ultimoTermino.current)
   }
 
-  // Vincular el código de la CAJA a un producto (1 caja = N piezas)
-  async function vincularCaja(p: Producto) {
-    const cod = window.prompt(`Escanea o escribe el CÓDIGO DE LA CAJA de:\n${p.nombre}`)
-    if (cod === null) return
-    const codCaja = cod.trim()
-    if (codCaja.length < 4) { alert('Código de caja inválido.'); return }
-    const ppcStr = window.prompt('¿Cuántas piezas trae cada caja? (ej. 12)', String(p.piezas_por_caja && p.piezas_por_caja > 1 ? p.piezas_por_caja : 12))
-    if (ppcStr === null) return
-    const ppc = parseInt(ppcStr, 10)
-    if (!(ppc >= 2)) { alert('Las piezas por caja deben ser 2 o más.'); return }
-    try {
-      setCargando(true)
-      await api.vincularCodigoCaja(p.codigo, codCaja, ppc)
-      await buscar()
-    } catch (e) { alert((e as Error).message); setCargando(false) }
-  }
-
-  // Corregir stock mal contado (lo que se metió como piezas pero eran cajas)
-  async function corregirStock(p: Producto) {
-    const ppcStr = window.prompt(
-      `Reajustar el stock de:\n${p.nombre}\n\nStock actual: ${p.stock}\n\n¿Cuántas piezas trae cada caja? El stock se multiplicará por ese número (ej. ${p.stock} × 12).`,
-      String(p.piezas_por_caja && p.piezas_por_caja > 1 ? p.piezas_por_caja : 12)
-    )
-    if (ppcStr === null) return
-    const factor = parseInt(ppcStr, 10)
-    if (!(factor >= 2)) { alert('El número debe ser 2 o más.'); return }
-    if (!window.confirm(`Se reajustará: ${p.stock} → ${p.stock * factor} piezas.\n¿Confirmas?`)) return
-    try {
-      setCargando(true)
-      await api.reinterpretarStock(p.codigo, factor)
-      await buscar()
-    } catch (e) { alert((e as Error).message); setCargando(false) }
-  }
+  // El escáner se pausa mientras el modal está abierto (evita búsquedas fantasma detrás)
+  useBarcodeScan(buscar, !detalleCodigo)
 
   return (
     <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -128,7 +85,8 @@ export default function Buscar() {
           <p style={{ fontSize: 34, marginBottom: 8 }}>🔍</p>
           <p style={{ fontSize: 14, color: '#5F5E5A', fontWeight: 600 }}>Consulta el inventario</p>
           <p style={{ fontSize: 12, color: '#aaa', marginTop: 6, maxWidth: 260, marginInline: 'auto' }}>
-            Busca un producto por nombre o escanea su código para ver cuánto hay y en qué ubicación está.
+            Busca por nombre (puedes escribir varias palabras) o escanea un código. Toca un
+            producto para ver todo y modificar su inventario.
           </p>
         </div>
       )}
@@ -151,38 +109,25 @@ export default function Buscar() {
       {!cargando && !error && resultados.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <p style={{ fontSize: 12, color: '#aaa' }}>
-            {resultados.length} resultado{resultados.length !== 1 ? 's' : ''}
+            {resultados.length} resultado{resultados.length !== 1 ? 's' : ''} · toca para ver y editar
           </p>
 
           {resultados.map(r => {
             const locs = (r.stockPorUbicacion ?? []).filter(u => u.cantidad > 0)
             return (
-              <div key={r.codigo} style={{
-                background: 'white', borderRadius: 12,
-                border: '1px solid rgba(0,0,0,0.06)',
-                padding: '14px 16px',
-                display: 'flex', alignItems: 'flex-start', gap: 12,
-              }}>
+              <button
+                key={r.codigo}
+                onClick={() => setDetalleCodigo(r.codigo)}
+                style={{
+                  background: 'white', borderRadius: 12,
+                  border: '1px solid rgba(0,0,0,0.06)',
+                  padding: '14px 16px', width: '100%', textAlign: 'left',
+                  display: 'flex', alignItems: 'flex-start', gap: 12, cursor: 'pointer',
+                }}
+              >
                 {/* Info del producto */}
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
-                    <p style={{ fontSize: 14, fontWeight: 600, color: '#1a1a18' }}>{r.nombre}</p>
-                    <button
-                      onClick={() => renombrar(r.codigo, r.nombre)}
-                      style={{ background: '#eef6f2', border: '1px solid rgba(29,158,117,0.25)', borderRadius: 6, padding: '2px 6px', cursor: 'pointer', fontSize: 12, flexShrink: 0 }}
-                      title="Corregir nombre"
-                    >🏷️</button>
-                    <button
-                      onClick={() => vincularCaja(r)}
-                      style={{ background: '#F0F7FF', border: '1px solid rgba(59,130,246,0.25)', borderRadius: 6, padding: '2px 6px', cursor: 'pointer', fontSize: 12, flexShrink: 0 }}
-                      title={(r.piezas_por_caja ?? 1) > 1 ? 'Cambiar código/piezas de la caja' : 'Vincular código de caja'}
-                    >📦</button>
-                    <button
-                      onClick={() => corregirStock(r)}
-                      style={{ background: '#FFF3E0', border: '1px solid rgba(216,90,48,0.25)', borderRadius: 6, padding: '2px 6px', cursor: 'pointer', fontSize: 12, flexShrink: 0 }}
-                      title="Corregir stock mal contado (×piezas por caja)"
-                    >🔧</button>
-                  </div>
+                  <p style={{ fontSize: 14, fontWeight: 600, color: '#1a1a18' }}>{r.nombre}</p>
                   <p style={{ fontSize: 11, color: '#bbb', fontFamily: 'monospace', marginTop: 2 }}>{r.codigo}</p>
 
                   {/* Desglose en cajas, si el producto tiene caja con N piezas */}
@@ -193,7 +138,7 @@ export default function Buscar() {
                     </p>
                   )}
 
-                  {/* Chips de ubicación con cantidad — visibles siempre */}
+                  {/* Chips de ubicación con cantidad */}
                   <div style={{ marginTop: 7, display: 'flex', flexWrap: 'wrap', gap: 5 }}>
                     {locs.length > 0 ? locs.map(u => (
                       <span key={u.ubicacion} style={{
@@ -213,17 +158,29 @@ export default function Buscar() {
                   </div>
                 </div>
 
-                {/* Stock total */}
-                <div style={{ textAlign: 'right', flexShrink: 0, paddingTop: 2 }}>
-                  <p style={{ fontSize: 24, fontWeight: 700, color: stockColor(r.stock), lineHeight: 1 }}>
-                    {r.stock}
-                  </p>
-                  <p style={{ fontSize: 10, color: '#aaa', marginTop: 2 }}>pzas</p>
+                {/* Stock total + indicador de tocable */}
+                <div style={{ textAlign: 'right', flexShrink: 0, paddingTop: 2, display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                  <div>
+                    <p style={{ fontSize: 24, fontWeight: 700, color: stockColor(r.stock), lineHeight: 1 }}>
+                      {r.stock}
+                    </p>
+                    <p style={{ fontSize: 10, color: '#aaa', marginTop: 2 }}>pzas</p>
+                  </div>
+                  <span style={{ fontSize: 18, color: '#ccc', lineHeight: 1.1 }}>›</span>
                 </div>
-              </div>
+              </button>
             )
           })}
         </div>
+      )}
+
+      {/* Modal de ficha del producto */}
+      {detalleCodigo && (
+        <ProductoDetalle
+          codigo={detalleCodigo}
+          onClose={() => setDetalleCodigo(null)}
+          onCambio={refrescar}
+        />
       )}
     </div>
   )
