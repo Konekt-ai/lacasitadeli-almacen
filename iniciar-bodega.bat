@@ -9,4 +9,3 @@ for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":3003" ^| findstr "LISTENING
 
 echo Iniciando servidor...
 node server.js
-oye ti 

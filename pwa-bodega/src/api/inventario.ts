@@ -112,9 +112,9 @@ export interface ProductoPendiente {
 
 const API_URL = import.meta.env.VITE_API_URL || ''
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+async function request<T>(path: string, options?: RequestInit, timeoutMs = 8000): Promise<T> {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 8000)
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const res = await fetch(`${API_URL}${path}`, {
       ...options,
@@ -204,7 +204,7 @@ export const api = {
       }),
 
   buscarProductos: (q: string) =>
-    request<Producto[]>(`/api/almacen/buscar?q=${encodeURIComponent(q)}`),
+    request<Producto[]>(`/api/almacen/buscar?q=${encodeURIComponent(q)}`, undefined, 15000),
 
   trasladar: (codigo: string, cantidad: number, de_ubicacion: string, a_ubicacion: string) =>
     request<MovimientoResponse>('/api/almacen/traslado', {

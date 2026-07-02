@@ -781,36 +781,57 @@ app.get('/api/almacen/movimientos', async (_req, res) => {
 })
 
 // ── GET /api/almacen/buscar?q=... ─────────────────────────────────────────────
+// Búsqueda por PALABRAS (tokens): cada palabra del término debe aparecer en el
+// nombre, sin importar el orden. Así "REESES PEANUT BUTTER GIANT BAR" encuentra
+// el producto aunque en la BD el nombre esté desordenado o con la medida en medio.
+// Además el nombre y el stock se resuelven EN LOTE (no con subconsultas por fila),
+// para que un término corto como "RE" no tarde y dispare el timeout del cliente.
 app.get('/api/almacen/buscar', async (req, res) => {
   const q = (req.query.q ?? '').toString().trim()
   if (q.length < 2) return res.json([])
+  // Palabras del término (máx. 6, para acotar el tamaño de la consulta)
+  const tokens = q.split(/\s+/).map(t => t.trim()).filter(Boolean).slice(0, 6)
+  if (tokens.length === 0) return res.json([])
   try {
     const db = await getPool()
 
-    // 1. Productos con stock total — busca por GTIN Y por código alterno (CodAlt_Codigo)
-    const result = await db.request()
-      .input('q', sql.NVarChar(100), `%${q}%`)
-      .query(`
-        SELECT TOP 15
+    // 1. Catálogo (NovaCaja): el nombre debe contener TODAS las palabras (AND).
+    //    También empareja si el término es un código de barras (GTIN o alterno).
+    const reqCat = db.request().input('qfull', sql.NVarChar(100), `%${q}%`)
+    tokens.forEach((t, i) => reqCat.input(`t${i}`, sql.NVarChar(100), `%${t}%`))
+    const condNombre = tokens.map((_, i) => `v.Art_Descripcion LIKE @t${i}`).join(' AND ')
+    const result = await reqCat.query(`
+        SELECT TOP 25
           v.Art_GTIN                 AS codigo,
           ISNULL(v.CodAlt_Codigo,'') AS codigo_alt,
-          ISNULL((
-            SELECT TOP 1 nombre FROM ${INV}
-            WHERE (codigo_barras = v.Art_GTIN OR codigo_barras = v.CodAlt_Codigo)
-              AND nombre IS NOT NULL AND nombre<>''
-          ), v.Art_Descripcion)      AS nombre,
-          ISNULL((
-            SELECT SUM(cantidad) FROM ${INV}
-            WHERE codigo_barras = v.Art_GTIN
-               OR codigo_barras = v.CodAlt_Codigo
-          ), 0) AS stock
+          v.Art_Descripcion          AS nombre
         FROM ${VISTA} v
-        WHERE v.Art_Descripcion LIKE @q
-           OR v.Art_GTIN        LIKE @q
-           OR v.CodAlt_Codigo   LIKE @q
-        ORDER BY v.Art_Descripcion`)
+        WHERE (${condNombre})
+           OR v.Art_GTIN        LIKE @qfull
+           OR v.CodAlt_Codigo   LIKE @qfull
+        ORDER BY
+          CASE WHEN v.Art_Descripcion LIKE @t0 THEN 0 ELSE 1 END,
+          v.Art_Descripcion`)
 
     const products = result.recordset
+
+    // 1b. Nombre propio de la bodega (override) EN LOTE — reemplaza el del catálogo
+    //     cuando alguien corrigió el nombre de un producto con 🏷️.
+    const nombreInv = {}
+    if (products.length > 0) try {
+      const codesN = new Set()
+      for (const p of products) {
+        if (p.codigo)     codesN.add(`'${String(p.codigo).replace(/'/g, "''")}'`)
+        if (p.codigo_alt) codesN.add(`'${String(p.codigo_alt).replace(/'/g, "''")}'`)
+      }
+      const r = await db.request().query(`
+        SELECT codigo_barras, MAX(nombre) AS nombre FROM ${INV}
+        WHERE codigo_barras IN (${[...codesN].join(',')})
+          AND nombre IS NOT NULL AND nombre<>''
+        GROUP BY codigo_barras`)
+      for (const row of r.recordset) nombreInv[row.codigo_barras] = row.nombre
+    } catch {}
+    for (const p of products) p.nombre = nombreInv[p.codigo] || nombreInv[p.codigo_alt] || p.nombre
 
     // 2. Desglose por ubicación — AGREGADO por ubicación y consistente con el total.
     //    Una misma fila puede pertenecer a varios productos que comparten código
@@ -820,8 +841,8 @@ app.get('/api/almacen/buscar', async (req, res) => {
     if (products.length > 0) try {
       const allCodes = new Set()
       for (const p of products) {
-        if (p.codigo)     allCodes.add(`'${p.codigo.replace(/'/g, "''")}'`)
-        if (p.codigo_alt) allCodes.add(`'${p.codigo_alt.replace(/'/g, "''")}'`)
+        if (p.codigo)     allCodes.add(`'${String(p.codigo).replace(/'/g, "''")}'`)
+        if (p.codigo_alt) allCodes.add(`'${String(p.codigo_alt).replace(/'/g, "''")}'`)
       }
       const locResult = await db.request().query(`
         SELECT i.codigo_barras, ISNULL(i.ubicacion,'Bodega') AS ubicacion,
@@ -851,15 +872,16 @@ app.get('/api/almacen/buscar', async (req, res) => {
     //    encuentren y luego se les pueda corregir el nombre con 🏷️.
     let nuevos = []
     try {
-      const nuevosRes = await db.request()
-        .input('q', sql.NVarChar(100), `%${q}%`)
-        .query(`
+      const reqN = db.request().input('qfull', sql.NVarChar(100), `%${q}%`)
+      tokens.forEach((t, i) => reqN.input(`t${i}`, sql.NVarChar(100), `%${t}%`))
+      const condNombreN = tokens.map((_, i) => `i.nombre LIKE @t${i}`).join(' AND ')
+      const nuevosRes = await reqN.query(`
           SELECT i.codigo_barras, i.nombre, ISNULL(i.ubicacion,'Bodega') AS ubicacion,
                  i.cantidad, ISNULL(u.color,'#6B7280') AS color
           FROM ${INV} i
           LEFT JOIN ${UBIC} u ON u.nombre=ISNULL(i.ubicacion,'Bodega') AND u.activa=1
           WHERE i.cantidad>0
-            AND (i.codigo_barras LIKE @q OR (i.nombre IS NOT NULL AND i.nombre LIKE @q))
+            AND (i.codigo_barras LIKE @qfull OR (i.nombre IS NOT NULL AND ${condNombreN}))
             AND NOT EXISTS (SELECT 1 FROM ${VISTA} v
                             WHERE v.Art_GTIN=i.codigo_barras OR v.CodAlt_Codigo=i.codigo_barras OR v.Art_Codigo=i.codigo_barras)
           ORDER BY i.codigo_barras, i.cantidad DESC`)
