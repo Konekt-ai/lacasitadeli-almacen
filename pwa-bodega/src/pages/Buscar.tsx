@@ -112,17 +112,23 @@ export default function Buscar() {
             {resultados.length} resultado{resultados.length !== 1 ? 's' : ''} · toca para ver y editar
           </p>
 
-          {resultados.map(r => {
+          {resultados.map((r, i) => {
             const locs = (r.stockPorUbicacion ?? []).filter(u => u.cantidad > 0)
+            // Solo se puede abrir la ficha si el producto tiene un código (de barras)
+            // con el que resolverlo. Un resultado sin código no debe dar un toque muerto.
+            const abrible = !!r.codigo
             return (
               <button
-                key={r.codigo}
-                onClick={() => setDetalleCodigo(r.codigo)}
+                key={r.codigo || `sin-cod-${i}`}
+                onClick={() => { if (r.codigo) setDetalleCodigo(r.codigo) }}
+                disabled={!abrible}
                 style={{
                   background: 'white', borderRadius: 12,
                   border: '1px solid rgba(0,0,0,0.06)',
                   padding: '14px 16px', width: '100%', textAlign: 'left',
-                  display: 'flex', alignItems: 'flex-start', gap: 12, cursor: 'pointer',
+                  display: 'flex', alignItems: 'flex-start', gap: 12,
+                  cursor: abrible ? 'pointer' : 'default',
+                  opacity: abrible ? 1 : 0.6,
                 }}
               >
                 {/* Info del producto */}

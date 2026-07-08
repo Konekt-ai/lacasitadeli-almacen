@@ -267,10 +267,14 @@ async function getNombre(db, codigo) {
 }
 
 async function getStock(db, codigo) {
-  const r = await db.request()
-    .input('codigo', sql.VarChar(50), codigo)
-    .query(`SELECT ISNULL(SUM(cantidad),0) AS stock FROM ${INV} WHERE codigo_barras=@codigo`)
-  return r.recordset[0]?.stock ?? 0
+  // Tolerante a fallos como sus hermanas (getStockPorUbicacion / getPiezasPorCaja):
+  // un error puntual de la BD no debe tumbar toda la ficha del producto.
+  try {
+    const r = await db.request()
+      .input('codigo', sql.VarChar(50), codigo)
+      .query(`SELECT ISNULL(SUM(cantidad),0) AS stock FROM ${INV} WHERE codigo_barras=@codigo`)
+    return r.recordset[0]?.stock ?? 0
+  } catch { return 0 }
 }
 
 async function getStockEnUbic(db, codigo, ubicacion) {
@@ -890,7 +894,11 @@ app.get('/api/almacen/buscar', async (req, res) => {
     const condNombre = tokens.map((_, i) => `v.Art_Descripcion LIKE @t${i}`).join(' AND ')
     const result = await reqCat.query(`
         SELECT TOP 25
-          v.Art_GTIN                 AS codigo,
+          -- En NovaCaja un producto puede traer SOLO CodAlt_Codigo (Art_GTIN NULL):
+          -- típico en cervezas/refrescos con caja e individual. Si el GTIN viene vacío
+          -- usamos el alterno como código de la tarjeta (el stock vive bajo ese código
+          -- y /detalle lo resuelve igual). Sin esto la ficha NO abría en esos productos.
+          COALESCE(NULLIF(v.Art_GTIN,''), NULLIF(v.CodAlt_Codigo,'')) AS codigo,
           ISNULL(v.CodAlt_Codigo,'') AS codigo_alt,
           v.Art_Descripcion          AS nombre
         FROM ${VISTA} v
