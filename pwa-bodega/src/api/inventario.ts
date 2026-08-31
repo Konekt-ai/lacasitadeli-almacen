@@ -141,6 +141,92 @@ export interface ProductoPendiente {
   created_at: string
 }
 
+// ── Pedidos de la página web (Shopify) — /api/pedidos-web/* (proxy a la API admin) ──
+export type EstadoPedidoWeb = 'nuevo' | 'preparando' | 'listo' | 'entregado' | 'enviado' | 'cancelado'
+export type TipoEntregaWeb  = 'recoger' | 'envio' | 'local'
+
+// Lo que regresa GET /api/pedidos-web/pendientes (lista compacta para el TC52)
+export interface PedidoWebCompacto {
+  id: number
+  numero: string                 // '#1001'
+  estado: EstadoPedidoWeb
+  cliente_nombre: string | null
+  fecha_pedido: string | null    // ISO con Z pero es hora CDMX "naive" → mostrar con timeZone:'UTC'
+  tipo_entrega: TipoEntregaWeb
+  total: number
+  n_lineas: number
+  unidades: number
+  escaneadas: number
+  faltantes: number
+  sin_codigo: number
+  ubicacion: string | null
+  estado_pago: string | null
+  pago_ok: boolean
+  notas_cliente: string | null
+}
+
+export interface StockAreaWeb {
+  ubicacion: string
+  fisico: number
+  apartado: number
+  disponible: number
+}
+
+export interface LineaPedidoWeb {
+  id: number
+  pedido_id: number
+  codigo_barras: string | null
+  sku: string | null
+  titulo: string
+  variante: string | null
+  cantidad: number
+  precio: number
+  total: number
+  ubicacion: string | null
+  faltante: number               // piezas sin stock contado (no se apartaron)
+  escaneado: number              // piezas validadas con el TC52
+  surtido_qty: number
+  sin_conteo: number
+  nombre_bodega: string | null
+  apartado_linea: number
+  stock_area: StockAreaWeb | null   // stock en SU ubicación
+  stock_otras: StockAreaWeb[]
+}
+
+// GET /api/pedidos-web/pedidos/:id
+export interface PedidoWebDetalle extends PedidoWebCompacto {
+  cliente_email?: string | null
+  cliente_telefono?: string | null
+  direccion?: string | null
+  entrega_detalle?: string | null
+  notas_internas?: string | null
+  reservado?: number
+  surtido?: number
+  lineas: LineaPedidoWeb[]
+  completo: boolean
+}
+
+export interface EscanearPedidoWebResponse {
+  ok: boolean
+  linea: { id: number; titulo: string; cantidad: number; escaneado: number; unidades: number }
+  completo: boolean
+  progreso: { escaneadas: number; total: number }
+}
+
+// POST /api/pedidos-web/pedidos/:id/estado — se lee con requestRaw() porque el 402
+// (requiereForzar) trae cuerpo útil y NO debe lanzar.
+export interface EstadoPedidoWebResponse {
+  ok: boolean
+  requiereForzar?: boolean
+  error?: string
+  mensaje?: string
+  pedido?: PedidoWebDetalle
+  descontadas?: number
+  sinConteo?: number
+  unidades?: number
+  shopifyOk?: boolean
+}
+
 const API_URL = import.meta.env.VITE_API_URL || ''
 
 async function request<T>(path: string, options?: RequestInit, timeoutMs = 8000): Promise<T> {
@@ -158,6 +244,28 @@ async function request<T>(path: string, options?: RequestInit, timeoutMs = 8000)
       throw new Error(err.mensaje ?? err.error ?? `Error ${res.status}`)
     }
     return res.json()
+  } catch (e) {
+    clearTimeout(timeout)
+    if ((e as Error).name === 'AbortError') throw new Error('Sin respuesta del servidor')
+    throw e
+  }
+}
+
+// Igual que request() pero NO lanza en 4xx/5xx: regresa { status, body } para que
+// la página decida (ej. 402 requiereForzar al entregar un pedido web sin pago).
+// Sí lanza si no hay red o se agota el tiempo.
+async function requestRaw<T>(path: string, options?: RequestInit, timeoutMs = 8000): Promise<{ status: number; body: T }> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(`${API_URL}${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json', ...options?.headers },
+    })
+    clearTimeout(timeout)
+    const body = await res.json().catch(() => ({ ok: false, mensaje: 'Error del servidor' }))
+    return { status: res.status, body: body as T }
   } catch (e) {
     clearTimeout(timeout)
     if ((e as Error).name === 'AbortError') throw new Error('Sin respuesta del servidor')
@@ -326,4 +434,41 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ codigo_barras, piezas_por_caja }),
       }),
+
+  // ── Pedidos de la página web (Shopify) — proxy a la API admin ──
+  // Lista compacta de pedidos activos (nuevo / preparando / listo)
+  getPedidosWeb: () =>
+    request<PedidoWebCompacto[]>('/api/pedidos-web/pendientes', undefined, 15000),
+
+  getPedidoWeb: (id: number) =>
+    request<PedidoWebDetalle>(`/api/pedidos-web/pedidos/${id}`, undefined, 15000),
+
+  // Valida una pieza escaneada contra el pedido (NO toca inventario).
+  // 404 = no está en el pedido, 409 = ya se escanearon todas / pedido cerrado.
+  escanearPedidoWeb: (id: number, codigo: string, cantidad = 1) =>
+    request<EscanearPedidoWebResponse>(`/api/pedidos-web/pedidos/${id}/escanear`, {
+      method: 'POST',
+      body: JSON.stringify({ codigo, cantidad, usuario: 'TC52' }),
+    }, 15000),
+
+  // Fija a mano el conteo de una línea (para productos sin código o correcciones)
+  setEscaneadoLinea: (id: number, lineaId: number, escaneado: number) =>
+    request<{ ok: boolean; pedido: PedidoWebDetalle }>(
+      `/api/pedidos-web/pedidos/${id}/lineas/${lineaId}/escaneado`, {
+        method: 'POST',
+        body: JSON.stringify({ escaneado }),
+      }, 15000),
+
+  resetEscaneoPedidoWeb: (id: number) =>
+    request<{ ok: boolean; pedido: PedidoWebDetalle }>(
+      `/api/pedidos-web/pedidos/${id}/escaneo/reset`, { method: 'POST' }, 15000),
+
+  // Cambia el estado. entregado/enviado = SALIDA física de bodega.
+  // Regresa { status, body } sin lanzar: si status === 402 y body.requiereForzar,
+  // el pago sigue pendiente → preguntar y reintentar con forzar:true.
+  cambiarEstadoPedidoWeb: (id: number, estado: EstadoPedidoWeb, opts: { forzar?: boolean; nota?: string } = {}) =>
+    requestRaw<EstadoPedidoWebResponse>(`/api/pedidos-web/pedidos/${id}/estado`, {
+      method: 'POST',
+      body: JSON.stringify({ estado, forzar: opts.forzar ?? false, nota: opts.nota, usuario: 'TC52' }),
+    }, 15000),
 }

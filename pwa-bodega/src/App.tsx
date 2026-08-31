@@ -6,12 +6,14 @@ import Buscar from './pages/Buscar'
 import Merma from './pages/Merma'
 import Nuevos from './pages/Nuevos'
 import GestionUbicaciones from './pages/GestionUbicaciones'
+import PedidosWeb from './pages/PedidosWeb'
 
-type Tab = 'recepcion' | 'salida' | 'merma' | 'historial' | 'buscar' | 'nuevos'
+type Tab = 'recepcion' | 'salida' | 'pedidos' | 'merma' | 'historial' | 'buscar' | 'nuevos'
 
 const TABS: { id: Tab; label: string; emoji: string }[] = [
   { id: 'recepcion', label: 'Recepción', emoji: '📦' },
   { id: 'salida',    label: 'Salida',    emoji: '📤' },
+  { id: 'pedidos',   label: 'Pedidos',   emoji: '🛒' },
   { id: 'nuevos',    label: 'Nuevos',    emoji: '🆕' },
   { id: 'merma',     label: 'Merma',     emoji: '🗑️' },
   { id: 'historial', label: 'Historial', emoji: '📋' },
@@ -21,6 +23,7 @@ const TABS: { id: Tab; label: string; emoji: string }[] = [
 const TAB_COLOR: Record<Tab, string> = {
   recepcion: '#1D9E75',
   salida:    '#D85A30',
+  pedidos:   '#7C3AED',
   merma:     '#C05621',
   historial: '#1D9E75',
   buscar:    '#3B82F6',
@@ -30,6 +33,7 @@ const TAB_COLOR: Record<Tab, string> = {
 const TAB_LABEL: Record<Tab, string> = {
   recepcion: 'Recepción de mercancía',
   salida:    'Salida de producto',
+  pedidos:   'Pedidos de la página web',
   merma:     'Registro de merma',
   historial: 'Historial del día',
   buscar:    'Inventario · cuánto hay y dónde',
@@ -80,6 +84,7 @@ export default function App() {
       <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain' }}>
         {tab === 'recepcion' && <Recepcion />}
         {tab === 'salida'    && <Salida />}
+        {tab === 'pedidos'   && <PedidosWeb />}
         {tab === 'merma'     && <Merma />}
         {tab === 'historial' && <Historial />}
         {tab === 'buscar'    && <Buscar />}

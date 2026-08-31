@@ -1639,6 +1639,7 @@ async function proxyAdmin(req, res) {
   }
 }
 app.use('/api/recepcion', proxyAdmin)
+app.use('/api/pedidos-web', proxyAdmin)
 app.all('/api/almacen/productos-pendientes', proxyAdmin)
 app.all('/api/almacen/productos-pendientes/*', proxyAdmin)
 app.all('/api/almacen/buscar-coincidencias', proxyAdmin)
