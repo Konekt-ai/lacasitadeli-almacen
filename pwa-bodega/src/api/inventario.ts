@@ -19,6 +19,7 @@ export interface MovimientoResponse {
   ok: boolean
   stockActual: number
   mensaje: string
+  movimiento_id?: number | null   // id en movimientos_bodega (solo lo devuelve /traslado)
 }
 
 // Un código ligado a un producto (individual = 1 pieza, caja = N piezas)
@@ -273,6 +274,33 @@ async function requestRaw<T>(path: string, options?: RequestInit, timeoutMs = 80
   }
 }
 
+// Solicitud de resurtido (la crea el panel o la app del teléfono; la ejecuta la TC52).
+// Las fechas DATETIME llegan como ISO con Z pero SON hora CDMX → pintar con timeZone 'UTC'.
+export interface SolicitudResurtido {
+  id: number
+  codigo_barras: string
+  codigo_pedido: string | null
+  nombre: string | null
+  nombre_mostrar: string
+  de_ubicacion: string
+  a_ubicacion: string
+  cantidad: number
+  cantidad_hecha: number | null
+  estado: 'pendiente' | 'hecha' | 'cancelada'
+  prioridad: number
+  origen: string
+  nota: string | null
+  solicitado_por: string | null
+  hecha_por: string | null
+  movimiento_id: number | null
+  stock_origen: number          // piezas AHORA en el origen
+  stock_destino: number | null  // piezas AHORA en el destino (null = nunca contado ahí)
+  creado: string
+  hecha_en: string | null
+  cancelada_en: string | null
+  motivo_cancelacion: string | null
+}
+
 export const api = {
   getProducto: (codigo: string) =>
     request<Producto>(`/api/almacen/producto/${encodeURIComponent(codigo)}`),
@@ -470,5 +498,25 @@ export const api = {
     requestRaw<EstadoPedidoWebResponse>(`/api/pedidos-web/pedidos/${id}/estado`, {
       method: 'POST',
       body: JSON.stringify({ estado, forzar: opts.forzar ?? false, nota: opts.nota, usuario: 'TC52' }),
+    }, 15000),
+
+  // ── Solicitudes de resurtido (Bodega -> Casita X). Proxy /api/resurtido -> admin ──
+  getResurtidosPendientes: () =>
+    request<SolicitudResurtido[]>('/api/resurtido/pendientes', undefined, 15000),
+
+  getResurtido: (id: number) =>
+    request<SolicitudResurtido>(`/api/resurtido/${id}`, undefined, 15000),
+
+  // Se llama justo DESPUÉS de api.trasladar (el traslado real ya quedó registrado).
+  marcarResurtidoHecho: (id: number, b: { cantidad?: number; movimiento_id?: number | null }) =>
+    request<{ ok: boolean; solicitud: SolicitudResurtido }>(`/api/resurtido/${id}/hecha`, {
+      method: 'POST',
+      body: JSON.stringify({ ...b, usuario: 'TC52' }),
+    }, 15000),
+
+  cancelarResurtido: (id: number, motivo?: string) =>
+    request<{ ok: boolean; solicitud: SolicitudResurtido }>(`/api/resurtido/${id}/cancelar`, {
+      method: 'POST',
+      body: JSON.stringify({ motivo, usuario: 'TC52' }),
     }, 15000),
 }

@@ -1050,6 +1050,7 @@ app.post('/api/almacen/traslado', async (req, res) => {
     if (stockOrigen < piezas)
       return res.status(400).json({ mensaje: `Stock insuficiente en ${de_ubicacion}. Disponible: ${stockOrigen} pzas` })
 
+    let movimientoId = null
     const t = db.transaction()
     await t.begin()
     try {
@@ -1079,18 +1080,24 @@ app.post('/api/almacen/traslado', async (req, res) => {
           WHEN NOT MATCHED THEN
             INSERT (codigo_barras,ubicacion,cantidad,ultima_entrada)
             VALUES (@codigo,@ubicacion,@cantidad,GETDATE());`)
-      // Registrar movimiento
-      await t.request()
+      // Registrar movimiento (se devuelve su id para ligarlo a una solicitud de resurtido)
+      const movRes = await t.request()
         .input('codigo',    sql.VarChar(50), codigo_base)
         .input('cantidad',  sql.Int,         piezas)
         .input('de_ubic',   sql.VarChar(50), de_ubicacion)
         .input('a_ubic',    sql.VarChar(50), a_ubicacion)
         .query(`INSERT INTO ${MOV}(codigo_barras,tipo,cantidad,ubicacion,area,fecha)
+                OUTPUT inserted.id
                 VALUES(@codigo,'traslado',@cantidad,@a_ubic,@de_ubic,GETDATE())`)
+      movimientoId = movRes.recordset?.[0]?.id ?? null
       await t.commit()
     } catch (err) { await t.rollback(); throw err }
 
-    res.json({ ok: true, stockActual: await getStock(db, codigo_base), mensaje: `Traslado: ${piezas} pzas de ${de_ubicacion} → ${a_ubicacion}` })
+    // Best-effort: que el admin cierre las solicitudes de resurtido que este traslado
+    // ya cumplió (mismo producto y misma ruta). No bloquea ni falla el traslado.
+    fetch(ADMIN_API + '/api/resurtido/conciliar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {})
+
+    res.json({ ok: true, stockActual: await getStock(db, codigo_base), movimiento_id: movimientoId, mensaje: `Traslado: ${piezas} pzas de ${de_ubicacion} → ${a_ubicacion}` })
   } catch (err) {
     console.error('traslado:', err.message)
     res.status(500).json({ mensaje: err.message })
@@ -1640,6 +1647,7 @@ async function proxyAdmin(req, res) {
 }
 app.use('/api/recepcion', proxyAdmin)
 app.use('/api/pedidos-web', proxyAdmin)
+app.use('/api/resurtido', proxyAdmin)
 app.all('/api/almacen/productos-pendientes', proxyAdmin)
 app.all('/api/almacen/productos-pendientes/*', proxyAdmin)
 app.all('/api/almacen/buscar-coincidencias', proxyAdmin)
