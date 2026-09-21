@@ -94,3 +94,11 @@ input {
 .badge-ok   { background: var(--verde-bg); color: var(--verde-dark); }
 .badge-low  { background: #FAEEDA; color: #633806; }
 .badge-zero { background: var(--rojo-bg); color: var(--rojo-dark); }
+
+/* Hoja de grupo de la barra inferior */
+@keyframes hoja-sube {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+.hoja-grupo { animation: hoja-sube 0.12s ease-out; }
+.hoja-btn:active { opacity: 0.8; }

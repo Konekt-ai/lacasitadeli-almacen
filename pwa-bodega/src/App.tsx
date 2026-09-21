@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Recepcion from './pages/Recepcion'
 import Salida from './pages/Salida'
 import Historial from './pages/Historial'
@@ -44,12 +44,57 @@ const TAB_LABEL: Record<Tab, string> = {
   nuevos:    'Productos nuevos',
 }
 
+// Barra inferior: 4 grupos. Tocar uno abre una hoja con sus pestañas;
+// un grupo con una sola pestaña la abre directo, sin hoja.
+type Grupo = 'entradas' | 'salidas' | 'pedidos' | 'consultar'
+
+const GRUPOS: { id: Grupo; label: string; emoji: string; tabs: Tab[] }[] = [
+  { id: 'entradas',  label: 'Entradas',  emoji: '📥', tabs: ['recepcion', 'nuevos'] },
+  { id: 'salidas',   label: 'Salidas',   emoji: '📤', tabs: ['salida', 'resurtido', 'merma'] },
+  { id: 'pedidos',   label: 'Pedidos',   emoji: '🛒', tabs: ['pedidos'] },
+  { id: 'consultar', label: 'Consultar', emoji: '🔍', tabs: ['buscar', 'historial'] },
+]
+
+const grupoDeTab = (tab: Tab) => GRUPOS.find(g => g.tabs.includes(tab)) ?? GRUPOS[0]
+const tabInfo    = (id: Tab) => TABS.find(t => t.id === id)!
+
 export default function App() {
-  const [tab,       setTab]       = useState<Tab>('recepcion')
-  const [showAdmin, setShowAdmin] = useState(false)
+  const [tab,          setTab]          = useState<Tab>('recepcion')
+  const [showAdmin,    setShowAdmin]    = useState(false)
+  const [grupoAbierto, setGrupoAbierto] = useState<Grupo | null>(null)
 
   const headerColor = TAB_COLOR[tab]
   const headerLabel = TAB_LABEL[tab]
+  const grupoActivo = grupoDeTab(tab)
+  const hoja        = grupoAbierto ? GRUPOS.find(g => g.id === grupoAbierto) ?? null : null
+
+  // La pistola tipea como teclado (useBarcodeScan escucha keydown en window).
+  // Con la hoja abierta, el primer carácter del escaneo la cierra; el evento no se
+  // detiene, así que el código sigue llegando a la pestaña activa.
+  useEffect(() => {
+    if (!grupoAbierto) return
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape' || e.key === 'Enter' || e.key.length === 1) setGrupoAbierto(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [grupoAbierto])
+
+  function tocarGrupo(g: typeof GRUPOS[number], boton: HTMLButtonElement) {
+    boton.blur() // que un Enter del escáner no vuelva a "clickear" el botón
+    if (g.tabs.length === 1) {
+      setTab(g.tabs[0])
+      setGrupoAbierto(null)
+      return
+    }
+    setGrupoAbierto(prev => (prev === g.id ? null : g.id))
+  }
+
+  function elegirTab(id: Tab, boton: HTMLButtonElement) {
+    boton.blur()
+    setTab(id)
+    setGrupoAbierto(null)
+  }
 
   return (
     <div style={{
@@ -96,31 +141,101 @@ export default function App() {
         {tab === 'nuevos'    && <Nuevos />}
       </div>
 
-      {/* Nav inferior */}
-      <div style={{
-        display: 'flex',
-        borderTop: '1px solid rgba(0,0,0,0.08)',
-        background: 'white',
-        flexShrink: 0,
-        paddingBottom: 'env(safe-area-inset-bottom)',
-      }}>
-        {TABS.map(t => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
+      {/* Fondo oscuro: tocar fuera cierra la hoja */}
+      {hoja && (
+        <div
+          onClick={() => setGrupoAbierto(null)}
+          aria-hidden="true"
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 20 }}
+        />
+      )}
+
+      {/* Nav inferior (la hoja del grupo cuelga pegada arriba de la barra) */}
+      <div style={{ position: 'relative', zIndex: 30, flexShrink: 0 }}>
+        {hoja && (
+          <div
+            role="menu"
+            aria-label={hoja.label}
+            className="hoja-grupo"
             style={{
-              flex: 1, padding: '10px 0',
-              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
-              borderTop: tab === t.id ? `2.5px solid ${TAB_COLOR[t.id]}` : '2.5px solid transparent',
-              color: tab === t.id ? TAB_COLOR[t.id] : '#aaa',
-              transition: 'color 0.15s',
-              background: 'none', cursor: 'pointer',
+              position: 'absolute', bottom: '100%', left: 8, right: 8, marginBottom: 6,
+              background: 'white', borderRadius: 14, padding: 8,
+              boxShadow: '0 -4px 24px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.08)',
             }}
           >
-            <span style={{ fontSize: 18 }}>{t.emoji}</span>
-            <span style={{ fontSize: 9, fontWeight: tab === t.id ? 600 : 400 }}>{t.label}</span>
-          </button>
-        ))}
+            <p style={{
+              fontSize: 12, fontWeight: 600, color: '#5F5E5A',
+              textTransform: 'uppercase', letterSpacing: 0.5, padding: '2px 6px 8px',
+            }}>
+              {hoja.emoji} {hoja.label}
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${hoja.tabs.length}, minmax(0, 1fr))`, gap: 6 }}>
+              {hoja.tabs.map(id => {
+                const t = tabInfo(id)
+                const activa = tab === id
+                return (
+                  <button
+                    key={id}
+                    role="menuitem"
+                    className="hoja-btn"
+                    onClick={e => elegirTab(id, e.currentTarget)}
+                    style={{
+                      minHeight: 64, borderRadius: 12, padding: '8px 4px',
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4,
+                      background: activa ? TAB_COLOR[id] : '#F1EFE8',
+                      color: activa ? 'white' : '#1a1a18',
+                    }}
+                  >
+                    <span style={{ fontSize: 24, lineHeight: 1 }}>{t.emoji}</span>
+                    <span style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.1 }}>{t.label}</span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        <div style={{
+          display: 'flex',
+          borderTop: '1px solid rgba(0,0,0,0.08)',
+          background: 'white',
+          paddingBottom: 'env(safe-area-inset-bottom)',
+        }}>
+          {GRUPOS.map(g => {
+            const esActivo = grupoActivo.id === g.id
+            const abierto  = grupoAbierto === g.id
+            const color    = esActivo ? TAB_COLOR[tab] : '#aaa'
+            const tabActiva = esActivo ? tabInfo(tab) : null
+            return (
+              <button
+                key={g.id}
+                onClick={e => tocarGrupo(g, e.currentTarget)}
+                aria-expanded={g.tabs.length > 1 ? abierto : undefined}
+                aria-haspopup={g.tabs.length > 1 ? 'menu' : undefined}
+                style={{
+                  // El grupo activo se ensancha un poco para que quepa "Grupo · Pestaña"
+                  flexGrow: esActivo ? 1.5 : 1, flexBasis: 0, minWidth: 0,
+                  padding: '10px 0',
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+                  borderTop: esActivo ? `2.5px solid ${TAB_COLOR[tab]}` : '2.5px solid transparent',
+                  color: abierto && !esActivo ? '#5F5E5A' : color,
+                  transition: 'color 0.15s, flex-grow 0.15s',
+                  background: 'none', cursor: 'pointer',
+                }}
+              >
+                <span style={{ fontSize: 18 }}>{g.emoji}</span>
+                <span style={{
+                  fontSize: 9, fontWeight: esActivo ? 600 : 400,
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                  maxWidth: '100%', padding: '0 3px',
+                }}>
+                  {/* Con una sola pestaña (Pedidos) no repetir "Pedidos · Pedidos" */}
+                  {tabActiva && g.tabs.length > 1 ? `${g.label} · ${tabActiva.label}` : g.label}
+                </span>
+              </button>
+            )
+          })}
+        </div>
       </div>
 
       {/* Admin overlay */}
